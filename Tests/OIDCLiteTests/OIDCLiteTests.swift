@@ -1,5 +1,5 @@
 import XCTest
-@testable import OIDCLite
+import OIDCLite
 
 final class OIDCLiteTests: XCTestCase {
     
@@ -48,6 +48,12 @@ final class OIDCLiteTests: XCTestCase {
         oidc.OIDCAuthEndpoint = authEndpoint
         
         if let url = oidc.createLoginURL() {
+            let queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+
+            XCTAssertEqual(queryItems?.first { $0.name == "state" }?.value, oidc.state)
+            XCTAssertEqual(queryItems?.first { $0.name == "nonce" }?.value, oidc.nonce)
+            XCTAssertNotNil(oidc.state)
+            XCTAssertNotNil(oidc.nonce)
             
             XCTAssert({
                 url.isFileURL == false

@@ -119,7 +119,8 @@ public class OIDCLite: NSObject {
     
     public var delegate: OIDCLiteDelegate?
     
-    private var state: String?
+    public private(set) var state: String?
+    public private(set) var nonce: String?
     private let queryItemKeys = OIDCQueryItemKeys()
     
     private struct OIDCQueryItemKeys {
@@ -208,7 +209,8 @@ public class OIDCLite: NSObject {
             queryItems.append(contentsOf: [codeChallengeMethodItem, codeChallengeItem])
         }
         
-        let nonceItem = URLQueryItem(name: queryItemKeys.nonce, value: UUID().uuidString)
+        nonce = UUID().uuidString
+        let nonceItem = URLQueryItem(name: queryItemKeys.nonce, value: nonce)
         queryItems.append(nonceItem)
         
         guard let url = URL(string: OIDCAuthEndpoint ?? "") else {
