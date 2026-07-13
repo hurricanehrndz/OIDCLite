@@ -1,0 +1,4 @@
+# SwiftLint with default rules. Runs as a gate via prek.
+excluded:
+  - .build
+  - Derived

@@ -1,0 +1,7 @@
+# Full swiftformat default ruleset. Runs as a lint gate via prek and can be
+# applied in write mode with `just lint` / `swiftformat .`.
+# Two rules are tuned to agree with the SwiftLint gate (opening_brace,
+# trailing_comma), which conflict with swiftformat's defaults.
+--swiftversion 5.5
+--disable wrapMultilineStatementBraces
+--trailingcommas never
