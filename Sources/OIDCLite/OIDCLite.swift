@@ -1,41 +1,11 @@
 import CryptoKit
 import Foundation
 import os.log
-import WebKit
 
 // This library is intentionally a single-file implementation; suppress the file
 // size limit rather than split the published API (the main type is likewise
 // suppressed at its declaration).
 // swiftlint:disable file_length
-
-public enum OIDCLiteTokenResult {
-    case success
-    case passwordChanged
-    case error(String)
-}
-
-@available(macOS 11.0, *)
-// Not constrained to AnyObject: this is published API and the delegate is held
-// strongly, so adding a class-only requirement would be a breaking change.
-// swiftlint:disable:next class_delegate_protocol
-public protocol OIDCLiteDelegate {
-    func tokenFailure(message: String)
-    func tokenResponse(tokens: OIDCLite.TokenResponse)
-}
-
-@propertyWrapper
-struct IntConvertible: Decodable {
-    var wrappedValue: Int
-    init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        wrappedValue = 0
-        if let intValue = try? container.decode(Int.self) {
-            wrappedValue = intValue
-        } else if let stringValue = try? container.decode(String.self), let intValue = Int(stringValue) {
-            wrappedValue = intValue
-        }
-    }
-}
 
 extension CharacterSet {
     static let urlQueryValueAllowed: CharacterSet = {
@@ -53,25 +23,10 @@ extension CharacterSet {
     }()
 }
 
-struct RefreshTokenResponse: Decodable {
-    let accessToken, refreshToken, tokenType: String
-    @IntConvertible var expiresIn: Int
-    let expiresOn, extExpiresIn: String?
-
-    enum CodingKeys: String, CodingKey {
-        case accessToken = "access_token"
-        case expiresIn = "expires_in"
-        case expiresOn = "expires_on"
-        case refreshToken = "refresh_token"
-        case extExpiresIn = "ext_expires_in"
-        case tokenType = "token_type"
-    }
-}
-
 @available(macOS 11.0, *)
 // Large by design: this is the library's single public type.
 // swiftlint:disable:next type_body_length
-public class OIDCLite: NSObject {
+public class OIDCLite {
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier!,
         category: "oidc"
@@ -105,11 +60,6 @@ public class OIDCLite: NSObject {
         }
     }
 
-    // Constants, in case nothing else is supplied
-
-    public let kRedirectURI = "oidclite://openID"
-    public let kDefaultScopes = ["openid", "profile", "email", "offline_access"]
-
     // OpenID settings, supplied on init()
 
     public let discoveryURL: String
@@ -132,31 +82,10 @@ public class OIDCLite: NSObject {
     // URL Session bits, we make a new ephemeral session every time the class
     // is invoked to ensure no lingering cookies
 
-    var dataTask: URLSessionDataTask?
     var session = URLSession(configuration: URLSessionConfiguration.ephemeral, delegate: nil, delegateQueue: nil)
-
-    // delegate for callbacks
-
-    public var delegate: OIDCLiteDelegate?
 
     public private(set) var state: String?
     public private(set) var nonce: String?
-    private let queryItemKeys = OIDCQueryItemKeys()
-
-    private struct OIDCQueryItemKeys {
-        let clientId = "client_id"
-        let responseType = "response_type"
-        let scope = "scope"
-        let redirectUri = "redirect_uri"
-        let state = "state"
-        let codeChallengeMethod = "code_challenge_method"
-        let codeChallenge = "code_challenge"
-        let nonce = "nonce"
-        let grantType = "grant_type"
-        let username = "username"
-        let password = "password"
-        let resource = "resource"
-    }
 
     /// Create a new OIDCLite object
     /// - Parameters:
@@ -168,7 +97,8 @@ public class OIDCLite: NSObject {
     ///     Defaults to "oidclite://openID" if nothing is supplied
     ///   - scopes: optional custom scopes to be used in the OpenID Connect request.
     ///     If nothing is supplied ["openid", "profile", "email", "offline_access"] will be used
-    ///
+    ///   - additionalParameters: optional additional parameters for the authorization request
+    ///   - resource: optional resource for the resource owner password grant request
     public init(
         discoveryURL: String,
         clientID: String,
@@ -176,29 +106,6 @@ public class OIDCLite: NSObject {
         redirectURI: String?,
         scopes: [String]?,
         additionalParameters: [String: String]? = nil,
-        useROPG _: Bool = false,
-        ropgUsername _: String? = nil,
-        ropgPassword _: String? = nil
-    ) {
-        self.discoveryURL = discoveryURL
-        self.clientID = clientID
-        self.clientSecret = clientSecret
-        self.redirectURI = redirectURI ?? "oidclite://openID"
-        self.scopes = scopes ?? ["openid", "profile", "email", "offline_access"]
-        self.additionalParameters = additionalParameters
-        resource = nil
-    }
-
-    public init(
-        discoveryURL: String,
-        clientID: String,
-        clientSecret: String?,
-        redirectURI: String?,
-        scopes: [String]?,
-        additionalParameters: [String: String]? = nil,
-        useROPG _: Bool = false,
-        ropgUsername _: String? = nil,
-        ropgPassword _: String? = nil,
         resource: String? = nil
     ) {
         self.discoveryURL = discoveryURL
@@ -217,14 +124,14 @@ public class OIDCLite: NSObject {
 
         var queryItems: [URLQueryItem] = []
 
-        let clientIdItem = URLQueryItem(name: queryItemKeys.clientId, value: clientID)
+        let clientIdItem = URLQueryItem(name: "client_id", value: clientID)
         queryItems.append(clientIdItem)
 
         let responseTypeItem: URLQueryItem
         let scopeItem: URLQueryItem
 
-        responseTypeItem = URLQueryItem(name: queryItemKeys.responseType, value: "code")
-        scopeItem = URLQueryItem(name: queryItemKeys.scope, value: scopes.joined(separator: " "))
+        responseTypeItem = URLQueryItem(name: "response_type", value: "code")
+        scopeItem = URLQueryItem(name: "scope", value: scopes.joined(separator: " "))
 
         queryItems.append(contentsOf: [responseTypeItem, scopeItem])
 
@@ -235,22 +142,22 @@ public class OIDCLite: NSObject {
             }
         }
 
-        let redirectUriItem = URLQueryItem(name: queryItemKeys.redirectUri, value: redirectURI)
+        let redirectUriItem = URLQueryItem(name: "redirect_uri", value: redirectURI)
         queryItems.append(redirectUriItem)
-        let stateItem = URLQueryItem(name: queryItemKeys.state, value: state)
+        let stateItem = URLQueryItem(name: "state", value: state)
         queryItems.append(stateItem)
 
         if let challengeData = codeVerifier.data(using: String.Encoding.ascii) {
-            let codeChallengeMethodItem = URLQueryItem(name: queryItemKeys.codeChallengeMethod, value: "S256")
+            let codeChallengeMethodItem = URLQueryItem(name: "code_challenge_method", value: "S256")
             let hash = SHA256.hash(data: challengeData)
             let challengeData = Data(hash)
             let challengeString = challengeData.base64EncodedString().base64URLEncoded()
-            let codeChallengeItem = URLQueryItem(name: queryItemKeys.codeChallenge, value: challengeString)
+            let codeChallengeItem = URLQueryItem(name: "code_challenge", value: challengeString)
             queryItems.append(contentsOf: [codeChallengeMethodItem, codeChallengeItem])
         }
 
         nonce = UUID().uuidString
-        let nonceItem = URLQueryItem(name: queryItemKeys.nonce, value: nonce)
+        let nonceItem = URLQueryItem(name: "nonce", value: nonce)
         queryItems.append(nonceItem)
 
         guard let url = URL(string: OIDCAuthEndpoint ?? "") else {
@@ -262,7 +169,7 @@ public class OIDCLite: NSObject {
         return urlComponents?.url
     }
 
-    func processOIDCResponse(_ data: Data) async throws -> TokenResponse {
+    func processOIDCResponse(_ data: Data) throws -> TokenResponse {
         var tokenResponse = TokenResponse()
 
         let jsonResult = try JSONSerialization.jsonObject(
@@ -345,7 +252,7 @@ public class OIDCLite: NSObject {
 
         if let response = response as? HTTPURLResponse,
            response.statusCode == 200 {
-            return try await processOIDCResponse(data)
+            return try processOIDCResponse(data)
 
         } else {
             do {
@@ -428,7 +335,7 @@ public class OIDCLite: NSObject {
 
         let (data, _) = try await URLSession.shared.data(for: req)
 
-        return try await processOIDCResponse(data)
+        return try processOIDCResponse(data)
     }
 
     // ROPG intentionally handles many auth/error branches in one place; the size
@@ -464,17 +371,17 @@ public class OIDCLite: NSObject {
 
         var reqComponents = URLComponents()
         var queryItems = [
-            URLQueryItem(name: queryItemKeys.grantType, value: "password"),
-            URLQueryItem(name: queryItemKeys.scope, value: scopesURLString),
-            URLQueryItem(name: queryItemKeys.username, value: encodedUsername),
-            URLQueryItem(name: queryItemKeys.password, value: encodedPassword)
+            URLQueryItem(name: "grant_type", value: "password"),
+            URLQueryItem(name: "scope", value: scopesURLString),
+            URLQueryItem(name: "username", value: encodedUsername),
+            URLQueryItem(name: "password", value: encodedPassword)
         ]
 
         let encodedResource = resource?
             .addingPercentEncoding(withAllowedCharacters: .urlQueryValueAllowed)?
             .replacingOccurrences(of: " ", with: "+")
         if let encodedResource = encodedResource {
-            queryItems.append(URLQueryItem(name: queryItemKeys.resource, value: encodedResource))
+            queryItems.append(URLQueryItem(name: "resource", value: encodedResource))
         }
         if !basicAuth {
             queryItems.append(URLQueryItem(name: "client_id", value: clientID))
@@ -506,7 +413,7 @@ public class OIDCLite: NSObject {
         }
         if let response = response as? HTTPURLResponse,
            (200 ... 228).contains(response.statusCode) {
-            return try await processOIDCResponse(data)
+            return try processOIDCResponse(data)
         } else if let response = response as? HTTPURLResponse,
                   (400 ... 403).contains(response.statusCode),
                   let overrideErrors = overrideErrors,
@@ -549,32 +456,5 @@ public class OIDCLite: NSObject {
         }
 
         return result
-    }
-}
-
-// Allow OIDCLite to be used as a WKNavigationDelegate
-// This works for when you're not using ASWebAuthenticationSession
-
-@available(macOS 11.0, *)
-extension OIDCLite: WKNavigationDelegate {
-    public func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation _: WKNavigation!) {
-        if (webView.url?.absoluteString.starts(with: redirectURI)) ?? false {
-            var code = ""
-            let fullCommand = webView.url?.absoluteString ?? ""
-            let pathParts = fullCommand.components(separatedBy: "&")
-            for part in pathParts where part.contains("code=") {
-                code = part.replacingOccurrences(of: redirectURI + "?", with: "")
-                    .replacingOccurrences(of: "code=", with: "")
-                Task {
-                    do {
-                        let tokenReponse = try await self.getToken(code: code)
-                        delegate?.tokenResponse(tokens: tokenReponse)
-                    } catch {
-                        delegate?.tokenFailure(message: "failure getting token")
-                    }
-                }
-                return
-            }
-        }
     }
 }
