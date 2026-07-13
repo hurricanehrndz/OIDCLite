@@ -1,5 +1,5 @@
 //
-//  File.swift
+//  OIDCLiteErrors.swift
 //
 //
 //  Created by Joel Rennich on 1/23/22.
@@ -8,11 +8,11 @@
 import Foundation
 
 public enum OIDCLiteError: Error {
-    case unableToFindCode, unableToLoadEndpoint, unableToParseEndpoint,tokenError(String),authFailure(String)
+    case unableToFindCode, unableToLoadEndpoint, unableToParseEndpoint, tokenError(String), authFailure(String)
 }
 
-extension OIDCLiteError {
-    public var errorDescription: String? {
+public extension OIDCLiteError {
+    var errorDescription: String? {
         switch self {
         case .unableToFindCode:
             return "Unable to parse code from URL"
@@ -24,7 +24,6 @@ extension OIDCLiteError {
             return "Authentication Failure"
         case .tokenError:
             return "Token Error"
-
         }
     }
 }

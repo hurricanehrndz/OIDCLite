@@ -22,6 +22,6 @@ let project = Project(
             deploymentTargets: .macOS("11.0"),
             sources: ["Tests/OIDCLiteTests/**"],
             dependencies: [.target(name: "OIDCLite")]
-        ),
+        )
     ]
 )

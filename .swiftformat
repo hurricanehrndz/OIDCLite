@@ -1,5 +1,7 @@
-# Adopt swiftformat as a lint gate without reformatting the existing codebase.
-# Only the trailing-whitespace rule is enforced (aligns with the pre-commit
-# trailing-whitespace hook). Enable more rules over time as the code is cleaned up.
+# Full swiftformat default ruleset. Runs as a lint gate via prek and can be
+# applied in write mode with `just lint` / `swiftformat .`.
+# Two rules are tuned to agree with the SwiftLint gate (opening_brace,
+# trailing_comma), which conflict with swiftformat's defaults.
 --swiftversion 5.5
---rules trailingSpace
+--disable wrapMultilineStatementBraces
+--trailingcommas never

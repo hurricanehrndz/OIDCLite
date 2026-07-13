@@ -11,7 +11,7 @@ repos:
     hooks:
       - id: swiftformat
         name: swiftformat
-        entry: swiftformat --lint --config .swiftformat .
+        entry: swiftformat --lint .
         language: system
         types: [swift]
         pass_filenames: false
