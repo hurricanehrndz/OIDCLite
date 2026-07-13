@@ -16,6 +16,7 @@
 - Tools are pinned in `mise.toml` (prek, swiftlint, swiftformat; tuist is macOS-only via an `os` gate). `direnv allow` activates them via `.envrc`.
 - Pre-commit hooks run through `prek` (`prek install` once per clone; `prek run --all-files` to check everything). Config: `.pre-commit-config.yaml`.
 - `.swiftformat` / `.swiftlint.yml` enforce the full default rulesets. The swiftformat hook lints bare (`swiftformat --lint .`, auto-discovering `.swiftformat`); the old `--config` workaround for the rule-restricting-config crash is no longer needed now that no rules are restricted.
+- A `.git-blame-ignore-revs` at the repo root lists the wholesale-reformat commit; run `git config blame.ignoreRevsFile .git-blame-ignore-revs` once per clone so blame skips it.
 - Xcode project generation (macOS only): `tuist generate --no-open`. Generated output (`*.xcodeproj`, `*.xcworkspace`, `Derived/`) is git-ignored — never commit it.
 
 ## Testing
