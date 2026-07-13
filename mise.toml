@@ -1,0 +1,5 @@
+[tools]
+prek = "latest"
+swiftlint = "latest"
+swiftformat = "latest"
+tuist = { version = "latest", os = ["macos"] }

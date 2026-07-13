@@ -1,0 +1,8 @@
+# Adopt swiftlint as a gate without reformatting the existing code.
+# Only the thresholds needed to pass the current sources are relaxed; the
+# remaining findings surface as warnings to tighten over time.
+identifier_name:
+  min_length:
+    error: 1
+line_length:
+  error: 300

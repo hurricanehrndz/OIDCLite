@@ -1,6 +1,6 @@
 //
 //  File.swift
-//  
+//
 //
 //  Created by Joel Rennich on 1/23/22.
 //
@@ -13,15 +13,15 @@ import AuthenticationServices
 class ASWebAuthManager: NSObject {
     // need to keep a strong reference to the authentication session
     var authSession: ASWebAuthenticationSession?
-    
+
     func run(_ ephemeralSession: Bool=true) {
-        
+
         let oidcLite = OIDCLite(discoveryURL: "https://oidc.example.com/.well-known/openid-configuration", clientID: "clientid", clientSecret: nil, redirectURI: "yourURI://oidc", scopes: nil)
-        
+
         oidcLite.getEndpoints()
-        
+
         if let url = oidcLite.createLoginURL() {
-            
+
             // Note that the callbackURLScheme is your redirect URI without the path.
             // Also note that it can't be http/https
             authSession = ASWebAuthenticationSession.init(url: url, callbackURLScheme: "yourURI", completionHandler: { url, error in
@@ -32,16 +32,16 @@ class ASWebAuthManager: NSObject {
                     print(error)
                 }
             })
-            
+
             // set a presentation context provider
             authSession?.presentationContextProvider = self
-            
+
             // set ephemeral session
             authSession?.prefersEphemeralWebBrowserSession = ephemeralSession
-            
+
             // ensure the auth session can start
             if authSession?.canStart {
-                
+
                 // start the auth session on the Main loop
                 RunLoop.main.perform {
                     self.authSession?.start()

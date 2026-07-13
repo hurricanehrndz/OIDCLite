@@ -23,7 +23,7 @@ At some point `WKNavigationDelegate` support will be added to this so that you c
 Create a new OIDCLite object
 
 `let oidcLite = OIDCLite(discoveryURL: "https://oidc.example.com/.well-known/openid-configuration", clientID: "clientid", clientSecret: nil, redirectURI: "yourURI://oidc", scopes: nil)`
-        
+
 Get the endpoints associated with the OIDC app
 
 `oidcLite.getEndpoints()`
@@ -50,3 +50,9 @@ A more detailed example can be found in the Examples folder.
 - Currently only a code grant flow is supported. For the purposes of authenticating an app this is the most preferred flow to use.
 
 - This package has been succesfully tested with Okta, Azure, OneLogin and ORY Hydra OIDC servers. Confidence is high that this will work with any OIDC compliant service.
+
+<hr>
+
+**Development:**
+
+Dev tooling is managed with [mise](https://mise.jdx.dev). Run `mise install` to get SwiftLint, SwiftFormat, prek, and (on macOS) tuist, then `prek install` to enable the pre-commit hooks. With [direnv](https://direnv.net), `direnv allow` puts the tools on your `PATH` automatically.

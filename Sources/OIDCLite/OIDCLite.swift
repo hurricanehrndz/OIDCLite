@@ -36,7 +36,7 @@ extension CharacterSet {
         // A-z0-9 and '*.-_' are allowed
         let generalDelimitersToEncode = ":#[]@?/"
         let subDelimitersToEncode = "!$&'()+,;=~"
-        
+
         var allowed = CharacterSet.urlQueryAllowed
         allowed.remove(charactersIn: "\(generalDelimitersToEncode)\(subDelimitersToEncode)")
         // replace space with + afterwards
@@ -49,7 +49,7 @@ struct RefreshTokenResponse: Decodable {
     let accessToken, refreshToken, tokenType: String
     @IntConvertible var expiresIn: Int
     let expiresOn, extExpiresIn: String?
-    
+
     enum CodingKeys: String, CodingKey {
         case accessToken = "access_token"
         case expiresIn = "expires_in"
@@ -64,7 +64,7 @@ public class OIDCLite: NSObject {
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier!,
         category: "oidc")
-    
+
     public struct TokenResponse {
         public var accessToken: String?
         public var idToken: String?
@@ -73,7 +73,7 @@ public class OIDCLite: NSObject {
         public var tokenType: String
         public var scope: String?
         public var jsonDict: [String:Any]?
-        
+
         public init(accessToken: String? = nil, idToken: String? = nil, refreshToken: String? = nil, expiresIn: Int? = nil, tokenType: String = "bearer", scope: String? = nil, jsonDict: [String : Any]? = nil) {
             self.accessToken = accessToken
             self.idToken = idToken
@@ -84,14 +84,14 @@ public class OIDCLite: NSObject {
             self.jsonDict = jsonDict
         }
     }
-    
+
     // Constants, in case nothing else is supplied
-    
+
     public let kRedirectURI = "oidclite://openID"
     public let kDefaultScopes = ["openid", "profile", "email", "offline_access"]
-    
+
     // OpenID settings, supplied on init()
-    
+
     public let discoveryURL: String
     public let redirectURI: String
     public let clientID: String
@@ -99,30 +99,30 @@ public class OIDCLite: NSObject {
     public let clientSecret: String?
     public let resource:String?
     public let additionalParameters:Dictionary<String,String>?
-    
+
     // OpenID endpoints, gathered from the discoveryURL
-    
+
     public var OIDCAuthEndpoint: String?
     public var OIDCTokenEndpoint: String?
-    
+
     // Used for PKCE, no need to be public
-    
+
     var codeVerifier = (UUID.init().uuidString + UUID.init().uuidString)
-    
+
     // URL Session bits, we make a new ephemeral session every time the class
     // is invoked to ensure no lingering cookies
-    
+
     var dataTask: URLSessionDataTask?
     var session = URLSession(configuration: URLSessionConfiguration.ephemeral, delegate: nil, delegateQueue: nil)
-    
+
     // delegate for callbacks
-    
+
     public var delegate: OIDCLiteDelegate?
-    
+
     public private(set) var state: String?
     public private(set) var nonce: String?
     private let queryItemKeys = OIDCQueryItemKeys()
-    
+
     private struct OIDCQueryItemKeys {
         let clientId = "client_id"
         let responseType = "response_type"
@@ -137,7 +137,7 @@ public class OIDCLite: NSObject {
         let password = "password"
         let resource = "resource"
     }
-    
+
     /// Create a new OIDCLite object
     /// - Parameters:
     ///   - discoveryURL: the full well-known openid-configuration URL, e.g. https://my.idp.com/.well-known/openid-configuration
@@ -155,8 +155,8 @@ public class OIDCLite: NSObject {
         self.additionalParameters = additionalParameters
         self.resource=nil
     }
-    
-    
+
+
     public init(discoveryURL: String, clientID: String, clientSecret: String?, redirectURI: String?, scopes: [String]?, additionalParameters: Dictionary<String, String>? = nil, useROPG:Bool=false, ropgUsername:String?=nil, ropgPassword:String?=nil, resource:String?=nil) {
         self.discoveryURL = discoveryURL
         self.clientID = clientID
@@ -166,40 +166,40 @@ public class OIDCLite: NSObject {
         self.additionalParameters = additionalParameters
         self.resource=resource
     }
-    
+
     /// Generates the inital login URL which can be passed to ASWebAuthenticationSession
     /// - Returns: A URL to be used with ASWebAuthenticationSession
     public func createLoginURL() -> URL? {
         state = UUID().uuidString
-        
+
         var queryItems: [URLQueryItem] = []
-        
+
         let clientIdItem = URLQueryItem(name: queryItemKeys.clientId, value: clientID)
         queryItems.append(clientIdItem)
-        
+
         let responseTypeItem: URLQueryItem
         let scopeItem: URLQueryItem
-        
+
         responseTypeItem = URLQueryItem(name: queryItemKeys.responseType, value: "code")
         scopeItem = URLQueryItem(name: queryItemKeys.scope, value: scopes.joined(separator: " "))
-        
-        
+
+
         queryItems.append(contentsOf: [responseTypeItem, scopeItem])
-        
+
         if let additionalParameters = additionalParameters {
             additionalParameters.forEach { k,v in
-                
+
                 let parameterItem = URLQueryItem(name: k, value: v)
                 queryItems.append(contentsOf: [parameterItem])
-                
+
             }
         }
-        
+
         let redirectUriItem = URLQueryItem(name: queryItemKeys.redirectUri, value: redirectURI)
         queryItems.append(redirectUriItem)
         let stateItem = URLQueryItem(name: queryItemKeys.state, value: state)
         queryItems.append(stateItem)
-        
+
         if let challengeData = codeVerifier.data(using: String.Encoding.ascii) {
             let codeChallengeMethodItem = URLQueryItem(name: queryItemKeys.codeChallengeMethod, value: "S256")
             let hash = SHA256.hash(data: challengeData)
@@ -208,15 +208,15 @@ public class OIDCLite: NSObject {
             let codeChallengeItem = URLQueryItem(name: queryItemKeys.codeChallenge, value: challengeString)
             queryItems.append(contentsOf: [codeChallengeMethodItem, codeChallengeItem])
         }
-        
+
         nonce = UUID().uuidString
         let nonceItem = URLQueryItem(name: queryItemKeys.nonce, value: nonce)
         queryItems.append(nonceItem)
-        
+
         guard let url = URL(string: OIDCAuthEndpoint ?? "") else {
             return nil
         }
-        
+
         var urlComponents = URLComponents(url: url, resolvingAgainstBaseURL: false)
         urlComponents?.queryItems = queryItems
         return urlComponents?.url
@@ -262,14 +262,14 @@ public class OIDCLite: NSObject {
         return tokenResponse
     }
 
-    
+
     /// Turn a code, returned from a successful ASWebAuthenticationSession, into a token set
     /// - Parameter code: the code generated by a successful authentication
     public func getToken(code: String, basicAuth: Bool=false) async throws -> TokenResponse {
         guard let path = OIDCTokenEndpoint else {
             throw OIDCLiteError.authFailure("No token endpoint found")
         }
-        
+
         guard let tokenURL = URL(string: path) else {
             throw OIDCLiteError.authFailure("Unable to make the token endpoint into a URL")
         }
@@ -278,9 +278,9 @@ public class OIDCLite: NSObject {
             "Accept": "application/json",
             "Content-Type": "application/x-www-form-urlencoded"
         ]
-        
+
         body.append("&client_id=" + clientID)
-        
+
         if let secret = clientSecret {
             if basicAuth {
                 headers["Authorization"] = "Basic " + ((clientID + ":" + secret).data(using: .utf8)?.base64EncodedString() ?? "")
@@ -288,21 +288,21 @@ public class OIDCLite: NSObject {
                 body.append("&client_secret=" + secret )
             }
         }
-        
+
         body.append("&redirect_uri=" + redirectURI.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!)
         let codeParam = "&code=" + code
-        
+
         body.append(codeParam)
         body.append("&code_verifier=" + codeVerifier)
-        
+
         var req = URLRequest(url: tokenURL)
         req.httpMethod = "POST"
         req.httpBody = body.data(using: .utf8)
-        
+
         req.allHTTPHeaderFields = headers
-        
+
         let (data, response) = try await URLSession.shared.data(for: req)
-        
+
         if let response = response as? HTTPURLResponse,
            response.statusCode == 200 {
             let tokenResponse = try await self.processOIDCResponse(data)
@@ -318,19 +318,19 @@ public class OIDCLite: NSObject {
             }
         }
     }
-    
+
     /// Function to parse the openid-configuration file into all of the requisite endpoints
     /// Function to async parse the openid-configuration file into all of the requisite endpoints
     public func getEndpoints() async throws {
         // make sure we can actually make a URL from the discoveryURL that we have
         guard let host = URL(string: discoveryURL) else { return }
         var req = URLRequest(url: host)
-        
+
         let headers = [
             "Accept": "application/json",
             "Cache-Control": "no-cache",
         ]
-        
+
         req.allHTTPHeaderFields = headers
         req.httpMethod = "GET"
         let (data, response) = try await session.data(for: req)
@@ -346,7 +346,7 @@ public class OIDCLite: NSObject {
             throw OIDCLiteError.unableToLoadEndpoint
         }
     }
-    
+
     /// Parse the response  from a redirect with a possible code in it.
     /// - Parameter url: redirect URL
     public func processResponseURL(url: URL) throws {
@@ -363,7 +363,7 @@ public class OIDCLite: NSObject {
         }
         throw OIDCLiteError.unableToFindCode
     }
-    
+
     public func refreshTokens(_ refreshToken:String) async throws -> TokenResponse {
 
         var parameters = "grant_type=refresh_token&refresh_token=\(refreshToken)&client_id=\(clientID )"
@@ -372,35 +372,35 @@ public class OIDCLite: NSObject {
         }
 
         let postData =  parameters.data(using: .utf8)
-        
+
         guard let path = OIDCTokenEndpoint else {
             throw OIDCLiteError.authFailure("No token endpoint found")
         }
-        
+
         guard let tokenURL = URL(string: path) else {
             throw OIDCLiteError.authFailure("Unable to make the token endpoint into a URL")
         }
-        
+
         var req = URLRequest(url: tokenURL)
-        
+
         req.addValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        
+
         req.httpMethod = "POST"
         req.httpBody = postData
-        
+
         let (data, _) = try await URLSession.shared.data(for: req)
 
         return try await self.processOIDCResponse(data)
     }
 
-    
+
     public func requestTokenWithROPG(username: String, password: String, basicAuth: Bool, overrideErrors: [String]?) async throws -> TokenResponse? {
         guard let urlString = OIDCTokenEndpoint, let url = URL(string: urlString) else {
             throw OIDCLiteError.unableToLoadEndpoint
 
         }
         var req = URLRequest(url: url)
-        
+
         var headers = [
             "Accept": "application/json",
             "Cache-Control": "no-cache",
@@ -440,18 +440,18 @@ public class OIDCLite: NSObject {
                 throw OIDCLiteError.authFailure("bad login info")
             }
         }
-        
+
         reqComponents.queryItems = queryItems
         req.allHTTPHeaderFields = headers
         req.httpMethod = "POST"
         req.httpBody = reqComponents.query?.data(using: .utf8)
-        
+
         let (data, response) = try await URLSession.shared.data(for: req)
-        
+
         var responseCode = 0
         if let response = response as? HTTPURLResponse{
             responseCode = response.statusCode
-        
+
         }
         if let response = response as? HTTPURLResponse,
            (200...228).contains(response.statusCode) {
@@ -485,17 +485,17 @@ public class OIDCLite: NSObject {
             throw OIDCLiteError.authFailure("Status code:\(responseCode), Not 400, no override, or bad error message:"+(String(data: data, encoding: .utf8) ?? "Unknown error"))
         }
     }
-    
+
     private func prettyPrintInfo(dict: [String:Any]) -> String {
-        
+
         var result = ""
-        
+
         for item in dict {
             result.append("\(item.key):  ")
             result.append(String.init(describing: item.value))
             result.append("\n")
         }
-        
+
         return result
     }
 }
@@ -505,9 +505,9 @@ public class OIDCLite: NSObject {
 
 @available(macOS 11.0, *)
 extension OIDCLite: WKNavigationDelegate {
-    
+
     public func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
-        
+
         if (webView.url?.absoluteString.starts(with: (redirectURI))) ?? false {
             var code = ""
             let fullCommand = webView.url?.absoluteString ?? ""
