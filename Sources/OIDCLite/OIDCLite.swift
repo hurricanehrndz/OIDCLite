@@ -23,7 +23,6 @@ extension CharacterSet {
     }()
 }
 
-@available(macOS 11.0, *)
 // Large by design: this is the library's single public type.
 // swiftlint:disable:next type_body_length
 public class OIDCLite {

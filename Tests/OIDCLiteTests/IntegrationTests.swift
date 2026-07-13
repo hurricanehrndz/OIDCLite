@@ -1,31 +1,32 @@
 import Foundation
 import OIDCLite
-import XCTest
+import Testing
 
-@available(macOS 11.0, *)
-final class OIDCLiteIntegrationTests: XCTestCase {
+@Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["DEX_ISSUER"] != nil))
+struct OIDCLiteIntegrationTests {
     private let clientID = "oidclite-test"
     private let clientSecret = "oidclite-secret"
     private let username = "admin@example.com"
     private let password = "password"
 
-    func testDiscoveryPopulatesAuthorizationAndTokenEndpoints() async throws {
+    @Test func discoveryPopulatesAuthorizationAndTokenEndpoints() async throws {
         let oidc = try await configuredOIDC()
 
-        XCTAssertNotNil(oidc.OIDCAuthEndpoint)
-        XCTAssertNotNil(oidc.OIDCTokenEndpoint)
+        #expect(oidc.OIDCAuthEndpoint != nil)
+        #expect(oidc.OIDCTokenEndpoint != nil)
     }
 
-    func testROPGReturnsAccessAndRefreshTokens() async throws {
+    @Test func ropgReturnsAccessAndRefreshTokens() async throws {
         let oidc = try await configuredOIDC()
         let tokens = try await passwordTokens(from: oidc)
 
-        XCTAssertNotNil(tokens.accessToken)
-        XCTAssertNotNil(tokens.refreshToken)
+        #expect(tokens.accessToken != nil)
+        #expect(tokens.refreshToken != nil)
     }
 
-    func testROPGRejectsWrongPassword() async throws {
+    @Test func ropgRejectsWrongPassword() async throws {
         let oidc = try await configuredOIDC()
+        var rejected = false
 
         do {
             _ = try await oidc.requestTokenWithROPG(
@@ -34,35 +35,36 @@ final class OIDCLiteIntegrationTests: XCTestCase {
                 basicAuth: false,
                 overrideErrors: nil
             )
-            XCTFail("dex accepted an invalid password")
         } catch {
-            // Any thrown error is the current API's rejection contract.
+            rejected = true
         }
+
+        #expect(rejected, "dex accepted an invalid password")
     }
 
-    func testRefreshTokenRefreshesSuccessfully() async throws {
+    @Test func refreshTokenRefreshesSuccessfully() async throws {
         let oidc = try await configuredOIDC()
         let initialTokens = try await passwordTokens(from: oidc)
-        let refreshToken = try XCTUnwrap(initialTokens.refreshToken)
+        let refreshToken = try #require(initialTokens.refreshToken)
         let refreshedTokens = try await oidc.refreshTokens(refreshToken)
 
-        XCTAssertNotNil(refreshedTokens.accessToken)
-        XCTAssertNotNil(refreshedTokens.refreshToken)
+        #expect(refreshedTokens.accessToken != nil)
+        #expect(refreshedTokens.refreshToken != nil)
     }
 
-    func testAuthorizationCodeFlowExchangesCodeWithPKCE() async throws {
+    @Test func authorizationCodeFlowExchangesCodeWithPKCE() async throws {
         let oidc = try await configuredOIDC()
-        let loginURL = try XCTUnwrap(oidc.createLoginURL())
+        let loginURL = try #require(oidc.createLoginURL())
         let delegate = CallbackDelegate()
         let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
         defer { session.invalidateAndCancel() }
 
         let (loginPage, response) = try await session.data(for: URLRequest(url: loginURL))
-        let html = try XCTUnwrap(String(data: loginPage, encoding: .utf8))
-        let action = try XCTUnwrap(
+        let html = try #require(String(data: loginPage, encoding: .utf8))
+        let action = try #require(
             html.components(separatedBy: "action=\"").dropFirst().first?.components(separatedBy: "\"").first
         )
-        let loginEndpoint = try XCTUnwrap(
+        let loginEndpoint = try #require(
             URL(string: action.replacingOccurrences(of: "&amp;", with: "&"), relativeTo: response.url)
         )
 
@@ -74,26 +76,23 @@ final class OIDCLiteIntegrationTests: XCTestCase {
         var request = URLRequest(url: loginEndpoint)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try XCTUnwrap(form.percentEncodedQuery?.data(using: .utf8))
+        request.httpBody = try #require(form.percentEncodedQuery?.data(using: .utf8))
         delegate.captureNextRedirect = true
         _ = try await session.data(for: request)
 
-        let callback = try XCTUnwrap(delegate.callbackURL)
-        let code = try XCTUnwrap(
+        let callback = try #require(delegate.callbackURL)
+        let code = try #require(
             URLComponents(url: callback, resolvingAgainstBaseURL: false)?
                 .queryItems?.first { $0.name == "code" }?.value
         )
         let tokens = try await oidc.getToken(code: code)
 
-        XCTAssertNotNil(tokens.accessToken)
-        XCTAssertNotNil(tokens.refreshToken)
+        #expect(tokens.accessToken != nil)
+        #expect(tokens.refreshToken != nil)
     }
 
     private func configuredOIDC() async throws -> OIDCLite {
-        guard let issuer = ProcessInfo.processInfo.environment["DEX_ISSUER"] else {
-            throw XCTSkip("DEX_ISSUER is not set")
-        }
-
+        let issuer = try #require(ProcessInfo.processInfo.environment["DEX_ISSUER"])
         let oidc = OIDCLite(
             discoveryURL: "\(issuer)/.well-known/openid-configuration",
             clientID: clientID,
@@ -112,11 +111,10 @@ final class OIDCLiteIntegrationTests: XCTestCase {
             basicAuth: false,
             overrideErrors: nil
         )
-        return try XCTUnwrap(tokens)
+        return try #require(tokens)
     }
 }
 
-@available(macOS 11.0, *)
 private final class CallbackDelegate: NSObject, URLSessionTaskDelegate {
     var captureNextRedirect = false
     private(set) var callbackURL: URL?

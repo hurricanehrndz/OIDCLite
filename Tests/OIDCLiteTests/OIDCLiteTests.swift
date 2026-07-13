@@ -1,7 +1,8 @@
+import Foundation
 import OIDCLite
-import XCTest
+import Testing
 
-final class OIDCLiteTests: XCTestCase {
+struct OIDCLiteTests {
     // mock data
 
     let discoveryURL = "https://example.com/.well-known/openid-configuration"
@@ -9,7 +10,7 @@ final class OIDCLiteTests: XCTestCase {
     let clientSecret = "BBA8C549-49BB-49D6-A835-C9372C36C32F"
     let authEndpoint = "https://example.com/oauth/v2/auth"
 
-    func testInitWithoutClientSecret() {
+    @Test func initWithoutClientSecret() {
         let oidc = OIDCLite(
             discoveryURL: discoveryURL,
             clientID: clientID,
@@ -18,12 +19,12 @@ final class OIDCLiteTests: XCTestCase {
             scopes: nil
         )
 
-        XCTAssert(oidc.discoveryURL == discoveryURL, "Failure to set DiscoveryURL")
+        #expect(oidc.discoveryURL == discoveryURL, "Failure to set DiscoveryURL")
 
-        XCTAssert(oidc.clientID == clientID, "Failure to set ClientID")
+        #expect(oidc.clientID == clientID, "Failure to set ClientID")
     }
 
-    func testInitWithClientSecret() {
+    @Test func initWithClientSecret() {
         let oidc = OIDCLite(
             discoveryURL: discoveryURL,
             clientID: clientID,
@@ -32,14 +33,14 @@ final class OIDCLiteTests: XCTestCase {
             scopes: nil
         )
 
-        XCTAssert(oidc.discoveryURL == discoveryURL, "Failure to set DiscoveryURL")
+        #expect(oidc.discoveryURL == discoveryURL, "Failure to set DiscoveryURL")
 
-        XCTAssert(oidc.clientID == clientID, "Failure to set ClientID")
+        #expect(oidc.clientID == clientID, "Failure to set ClientID")
 
-        XCTAssert(oidc.clientSecret == clientSecret, "Failure to set ClientSecret")
+        #expect(oidc.clientSecret == clientSecret, "Failure to set ClientSecret")
     }
 
-    func testInitAndGenerateLoginURL() {
+    @Test func initAndGenerateLoginURL() throws {
         let oidc = OIDCLite(
             discoveryURL: discoveryURL,
             clientID: clientID,
@@ -52,28 +53,24 @@ final class OIDCLiteTests: XCTestCase {
 
         oidc.OIDCAuthEndpoint = authEndpoint
 
-        if let url = oidc.createLoginURL() {
-            let queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+        let url = try #require(oidc.createLoginURL(), "createLoginURL() returned nil")
+        let queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
 
-            XCTAssertEqual(queryItems?.first { $0.name == "state" }?.value, oidc.state)
-            XCTAssertEqual(queryItems?.first { $0.name == "nonce" }?.value, oidc.nonce)
-            XCTAssertNotNil(oidc.state)
-            XCTAssertNotNil(oidc.nonce)
+        #expect(queryItems?.first { $0.name == "state" }?.value == oidc.state)
+        #expect(queryItems?.first { $0.name == "nonce" }?.value == oidc.nonce)
+        #expect(oidc.state != nil)
+        #expect(oidc.nonce != nil)
 
-            XCTAssert(url.isFileURL == false, "Login URL is File URL")
+        #expect(url.isFileURL == false, "Login URL is File URL")
 
-            XCTAssert({
-                if url.host != "example.com" {
-                    return false
-                }
-                if !url.pathComponents.contains("v2") {
-                    return false
-                }
-                return true
-            }(), "Unable to use LoginURL")
-
-        } else {
-            XCTFail("createLoginURL() returned nil")
-        }
+        #expect({
+            if url.host != "example.com" {
+                return false
+            }
+            if !url.pathComponents.contains("v2") {
+                return false
+            }
+            return true
+        }(), "Unable to use LoginURL")
     }
 }
