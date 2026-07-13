@@ -1,4 +1,5 @@
 [tools]
+just = "latest"
 prek = "latest"
 swiftlint = "latest"
 swiftformat = "latest"
