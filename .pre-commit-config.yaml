@@ -11,6 +11,7 @@ repos:
     rev: 1.0.0
     hooks:
       - id: mdformat
+        exclude: ^AGENTS\.md$
 
   - repo: local
     hooks:

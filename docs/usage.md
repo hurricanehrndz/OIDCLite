@@ -2,7 +2,9 @@
 
 ## Authorization-code login
 
-The source of truth for this example is [`Tests/OIDCLiteTests/ExampleUsage.swift`](../Tests/OIDCLiteTests/ExampleUsage.swift), which is compiled with the test target.
+The source of truth for this example is
+[`Tests/OIDCLiteTests/ExampleUsage.swift`](../Tests/OIDCLiteTests/ExampleUsage.swift), which is
+compiled with the test target.
 
 ```swift
 // This example is compiled as part of the test target but never executed.
@@ -57,7 +59,10 @@ func authenticate(
 }
 ```
 
-`createLoginURL` generates fresh state, nonce, and PKCE verifier values. `processResponseURL` validates the returned state before exchanging the authorization code. The default redirect URI is `oidclite://openID`; the default scopes are `openid`, `profile`, `email`, and `offline_access`. Both can be overridden in the initializer.
+`createLoginURL` generates fresh state, nonce, and PKCE verifier values. `processResponseURL`
+validates the returned state before exchanging the authorization code. The default redirect URI is
+`oidclite://openID`; the default scopes are `openid`, `profile`, `email`, and `offline_access`. Both
+can be overridden in the initializer.
 
 ## Discovery endpoints
 
@@ -68,13 +73,18 @@ func authenticate(
 - `issuer: String?`
 - `jwksURI: URL?`
 
-Pass the returned endpoints to login and token operations. An operation requiring an absent authorization or token endpoint throws `OIDCLiteError.missingEndpoint`.
+Pass the returned endpoints to login and token operations. An operation requiring an absent
+authorization or token endpoint throws `OIDCLiteError.missingEndpoint`.
 
 ## Refresh tokens and HTTP Basic authentication
 
-Refresh a token with `try await oidc.refreshTokens(refreshToken, endpoints: endpoints)`. OIDCLite does not manage the token lifecycle; callers store, refresh, and discard tokens for their application.
+Refresh a token with `try await oidc.refreshTokens(refreshToken, endpoints: endpoints)`. OIDCLite
+does not manage the token lifecycle; callers store, refresh, and discard tokens for their
+application.
 
-Pass `basicAuth: true` when the provider requires client credentials in the HTTP `Authorization: Basic` header. When configured, the client secret is then omitted from the form body:
+Pass `basicAuth: true` when the provider requires client credentials in the HTTP
+`Authorization: Basic` header. When configured, the client secret is then omitted from the form
+body:
 
 ```swift
 let tokens = try await oidc.refreshTokens(
@@ -92,4 +102,6 @@ Non-success token responses containing OAuth error JSON throw:
 OIDCLiteError.oauthError(code: String, description: String?, httpStatus: Int)
 ```
 
-Callers can use the OAuth code and HTTP status directly. Non-JSON error bodies throw `OIDCLiteError.authFailure`; discovery, callback parsing, state validation, and missing endpoints use their dedicated `OIDCLiteError` cases.
+Callers can use the OAuth code and HTTP status directly. Non-JSON error bodies throw
+`OIDCLiteError.authFailure`; discovery, callback parsing, state validation, and missing endpoints
+use their dedicated `OIDCLiteError` cases.
