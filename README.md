@@ -1,58 +1,130 @@
 # OIDCLite
 
-While there are a few good Swift packages for Open ID Connect out there, most are /very/ heavyweight and can get quite complex. For projects that have rather modest needs of just confirming a user is valid, and perhaps acquring an OIDC token set for a subsequent operation, OIDCLite may be what you're looking for!
+While there are a few good Swift packages for OpenID Connect out there, most are very heavyweight and can get quite complex. For projects with modest needs—confirming a user is valid and perhaps acquiring an OIDC token set for a subsequent operation—OIDCLite may be what you're looking for.
 
-OIDCLite implements the basics of getting a token using Apple's ASWebAuthenticationSession so you have very little web things to deal with. OIDCLite fully supports PKCE and client secrets (if you must).
+OIDCLite implements the basics of getting tokens with Apple's `ASWebAuthenticationSession`, so you have very little web plumbing to deal with. It supports PKCE and client secrets.
 
-ASWebAuthenticationSession works REALLY well on iOS and should easily handle all of your needs. It blends in with your iOS app and it looks well put together. On the Mac... it's a bit of a different story, so try it out a few times.
+`ASWebAuthenticationSession` works really well on iOS and blends in with your app. On the Mac, it is a bit of a different story, so try it out a few times.
 
-`OIDCLite` will take a discovery URL, parse out the correct endpoints and provide you a URL to feed into `ASWebAuthenticationSession`. On a successful auth, you can pass the resultant code back into `OIDCLite` and have it get you a set of tokens.
+OIDCLite takes a discovery URL, returns the provider's endpoints, and creates a login request for `ASWebAuthenticationSession`. After authorization, pass the callback URL, login request, and endpoints back to OIDCLite to validate state and exchange the code for tokens.
 
-`OIDCLite` fully supports PKCE (Proof Key for Code Exchange) in addition to client secrets.
+By default OIDCLite uses `oidclite://openID` as the redirect URI and `openid`, `profile`, `email`, and `offline_access` as scopes. You can override both in the initializer.
 
-By default `OIDCLite` will use `oidclite://OpenID` as the callback URI and `"openid", "profile", "email", "offline_access"` as the default scopes. You are, of course, free to change these to whatever you want.
+OIDCLite supports macOS 15+ and iOS 14+.
 
-This package supports macOS 10.15 and greater and iOS 14 and greater. It could probably work for older versions of macOS but you'd have to bail on CryptoKit and bring in CommonCrypto.
+## Usage
 
-At some point `WKNavigationDelegate` support will be added to this so that you can use this package with WKWebViews in addition to ASWebAuthenticationSession. Although if you want to do that today... you can do the delegate yourself and pass the resultant code back into OIDCLite for processing.
+The source of truth for this example is [`Tests/OIDCLiteTests/ExampleUsage.swift`](Tests/OIDCLiteTests/ExampleUsage.swift), which is compiled with the test target.
 
-<hr>
+```swift
+// This example is compiled as part of the test target but never executed.
 
-**Usage:**
+import AuthenticationServices
+import Foundation
+import OIDCLite
 
-Create a new OIDCLite object
+@MainActor
+func authenticate(
+    presentationContextProvider: any ASWebAuthenticationPresentationContextProviding
+) async throws -> OIDCLite.TokenResponse {
+    let oidc = OIDCLite(
+        discoveryURL: "https://oidc.example.com/.well-known/openid-configuration",
+        clientID: "clientid"
+    )
+    let endpoints = try await oidc.getEndpoints()
+    let login = try oidc.createLoginURL(endpoints: endpoints)
 
-`let oidcLite = OIDCLite(discoveryURL: "https://oidc.example.com/.well-known/openid-configuration", clientID: "clientid", clientSecret: nil, redirectURI: "yourURI://oidc", scopes: nil)`
+    var authenticationSession: ASWebAuthenticationSession?
+    defer { withExtendedLifetime(authenticationSession) {} }
 
-Get the endpoints associated with the OIDC app
+    let callbackURL: URL = try await withCheckedThrowingContinuation { continuation in
+        let session = ASWebAuthenticationSession(
+            url: login.url,
+            callbackURLScheme: "oidclite"
+        ) { callbackURL, error in
+            if let callbackURL {
+                continuation.resume(returning: callbackURL)
+            } else {
+                continuation.resume(throwing: error ?? OIDCLiteError.authFailure(
+                    "Authentication session returned no callback URL"
+                ))
+            }
+        }
+        session.presentationContextProvider = presentationContextProvider
+        authenticationSession = session
 
-`oidcLite.getEndpoints()`
+        guard session.start() else {
+            continuation.resume(throwing: OIDCLiteError.authFailure(
+                "Unable to start authentication session"
+            ))
+            return
+        }
+    }
 
-Once an ASWebAuthenticationSession has been created, you can process the redirect URI
+    return try await oidc.processResponseURL(
+        url: callbackURL,
+        login: login,
+        endpoints: endpoints
+    )
+}
+```
 
-`do {
-        try oidcLite.processResponseURL(url: url)
-    } catch {
-        // Handle the error here
-        print(error)
-}`
+## API notes
 
-A more detailed example can be found in the Examples folder.
+### Discovery endpoints
 
-<hr>
+`try await oidc.getEndpoints()` returns `OIDCLite.Endpoints`. Pass this value to login and token operations rather than storing endpoint state in OIDCLite:
 
-**Notes:**
+- `authorization: URL?` — authorization endpoint
+- `token: URL?` — token endpoint
+- `issuer: String?` — discovered issuer
+- `jwksURI: URL?` — discovered JSON Web Key Set URI
 
-- There's no support for any token lifecycle management here, this package is specifically to get a new token for authentication/identity purposes.
+Operations that require a missing authorization or token endpoint throw `OIDCLiteError.missingEndpoint`.
 
-- There's no need to enable PKCE, as it's used with every operation regardless.
+### Typed OAuth errors
 
-- Currently only a code grant flow is supported. For the purposes of authenticating an app this is the most preferred flow to use.
+Non-success token responses containing OAuth error JSON throw:
 
-- This package has been succesfully tested with Okta, Azure, OneLogin and ORY Hydra OIDC servers. Confidence is high that this will work with any OIDC compliant service.
+```swift
+OIDCLiteError.oauthError(code: String, description: String?, httpStatus: Int)
+```
 
-<hr>
+This lets callers make decisions using the OAuth error code and HTTP status instead of parsing an error message. Non-JSON error bodies use `OIDCLiteError.authFailure`; discovery, callback parsing, state validation, and missing endpoints have their own `OIDCLiteError` cases.
 
-**Development:**
+### Resource owner password grant
 
-Dev tooling is managed with [mise](https://mise.jdx.dev). Run `mise install` to get SwiftLint, SwiftFormat, prek, and (on macOS) tuist, then `prek install` to enable the pre-commit hooks. With [direnv](https://direnv.net), `direnv allow` puts the tools on your `PATH` automatically.
+`requestTokenWithROPG(username:password:endpoints:basicAuth:overrideErrors:)` returns a token response on success. For HTTP 400–403 responses, each `overrideErrors` value is matched as a substring of the raw response body. A match returns `nil`, meaning credentials were accepted for the caller's policy but no token is available, such as an MFA-gated response. A non-match throws a typed OAuth error when the body is OAuth error JSON, or `authFailure` otherwise.
+
+Entra and Okta ROPG use the same standards-based `application/x-www-form-urlencoded` codec. Codec reference: https://theproductguy.in/blogs/url-encoding-for-forms/
+
+### Refresh tokens and HTTP Basic authentication
+
+Refresh a token with:
+
+```swift
+let tokens = try await oidc.refreshTokens(refreshToken, endpoints: endpoints)
+```
+
+Pass `basicAuth: true` when the provider requires client credentials in the HTTP `Authorization: Basic` header. When a client secret is configured, it is omitted from the form body in this mode:
+
+```swift
+let tokens = try await oidc.refreshTokens(
+    refreshToken,
+    endpoints: endpoints,
+    basicAuth: true
+)
+```
+
+## Notes
+
+- OIDCLite does not manage the token lifecycle; callers store, refresh, and discard tokens according to their application's needs.
+- PKCE is always used for authorization-code login requests.
+- Authorization-code and resource owner password grant token requests are supported.
+- OIDCLite has been tested with Okta, Entra ID, OneLogin, ORY Hydra, and dex.
+
+## Development
+
+Dev tooling is managed with [mise](https://mise.jdx.dev). Run `mise install` to get SwiftLint, SwiftFormat, prek, and (on macOS) Tuist, then `prek install` to enable the pre-commit hooks. With [direnv](https://direnv.net), `direnv allow` puts the tools on your `PATH` automatically.
+
+Run offline unit tests with `just test`. Integration tests require Go to build the pinned dex server; run them with `just itest`. Run all lint and formatting checks with `just lint`.
