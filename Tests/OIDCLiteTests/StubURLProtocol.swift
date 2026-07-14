@@ -1,12 +1,23 @@
 import Foundation
+import Synchronization
 
 class StubURLProtocol: URLProtocol {
-    static var responses: [(HTTPURLResponse, Data)] = []
-    static var requests: [URLRequest] = []
+    private struct State {
+        var responses: [(HTTPURLResponse, Data)] = []
+        var requests: [URLRequest] = []
+    }
+
+    private static let state = Mutex(State())
+
+    static var requests: [URLRequest] {
+        state.withLock { $0.requests }
+    }
 
     static func session(responses: [(HTTPURLResponse, Data)]) -> URLSession {
-        self.responses = responses
-        requests = []
+        state.withLock {
+            $0.responses = responses
+            $0.requests = []
+        }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubURLProtocol.self]
         return URLSession(configuration: configuration)
@@ -35,13 +46,13 @@ class StubURLProtocol: URLProtocol {
             }
             capturedRequest.httpBody = body
         }
-        Self.requests.append(capturedRequest)
-
-        guard !Self.responses.isEmpty else {
+        guard let (response, data) = Self.state.withLock({ state in
+            state.requests.append(capturedRequest)
+            return state.responses.isEmpty ? nil : state.responses.removeFirst()
+        }) else {
             client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
             return
         }
-        let (response, data) = Self.responses.removeFirst()
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: data)
         client?.urlProtocolDidFinishLoading(self)

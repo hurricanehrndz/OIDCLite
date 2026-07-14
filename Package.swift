@@ -5,7 +5,7 @@ import PackageDescription
 let package = Package(
     name: "OIDCLite",
     platforms: [
-        .macOS(.v11), .iOS(.v14)
+        .macOS(.v15), .iOS(.v14)
     ],
     products: [
         .library(
@@ -25,5 +25,5 @@ let package = Package(
             dependencies: ["OIDCLite"]
         )
     ],
-    swiftLanguageModes: [.v5]
+    swiftLanguageModes: [.v6]
 )

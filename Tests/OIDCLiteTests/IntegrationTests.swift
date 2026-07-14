@@ -1,5 +1,6 @@
 import Foundation
 import OIDCLite
+import Synchronization
 import Testing
 
 @Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["DEX_ISSUER"] != nil))
@@ -135,8 +136,21 @@ struct OIDCLiteIntegrationTests {
 }
 
 private final class CallbackDelegate: NSObject, URLSessionTaskDelegate {
-    var captureNextRedirect = false
-    private(set) var callbackURL: URL?
+    private struct State {
+        var captureNextRedirect = false
+        var callbackURL: URL?
+    }
+
+    private let state = Mutex(State())
+
+    var captureNextRedirect: Bool {
+        get { state.withLock { $0.captureNextRedirect } }
+        set { state.withLock { $0.captureNextRedirect = newValue } }
+    }
+
+    var callbackURL: URL? {
+        state.withLock { $0.callbackURL }
+    }
 
     func urlSession(
         _: URLSession,
@@ -145,11 +159,12 @@ private final class CallbackDelegate: NSObject, URLSessionTaskDelegate {
         newRequest request: URLRequest,
         completionHandler: @escaping (URLRequest?) -> Void
     ) {
-        if captureNextRedirect {
-            callbackURL = request.url
-            completionHandler(nil)
-            return
+        let captured = state.withLock { state in
+            guard state.captureNextRedirect else { return false }
+            state.captureNextRedirect = false
+            state.callbackURL = request.url
+            return true
         }
-        completionHandler(request)
+        completionHandler(captured ? nil : request)
     }
 }
