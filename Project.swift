@@ -8,7 +8,7 @@ let project = Project(
             destinations: [.mac, .iPhone, .iPad],
             product: .framework,
             bundleId: "ca.hrndz.OIDCLite",
-            deploymentTargets: .multiplatform(iOS: "14.0", macOS: "10.15"),
+            deploymentTargets: .multiplatform(iOS: "14.0", macOS: "15.0"),
             sources: ["Sources/OIDCLite/**"]
         ),
         // ponytail: mac-only tests — `tuist test` rejects multi-platform test targets;
@@ -18,8 +18,7 @@ let project = Project(
             destinations: [.mac],
             product: .unitTests,
             bundleId: "ca.hrndz.OIDCLiteTests",
-            // Tests call API that is @available(macOS 11.0, *).
-            deploymentTargets: .macOS("11.0"),
+            deploymentTargets: .macOS("15.0"),
             sources: ["Tests/OIDCLiteTests/**"],
             dependencies: [.target(name: "OIDCLite")]
         )

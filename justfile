@@ -6,6 +6,10 @@ default:
 test:
     swift test
 
+# run dex-backed integration tests (macOS only; requires Go)
+itest:
+    scripts/integration/run-dex.sh
+
 # run all pre-commit hooks
 lint:
     prek run --all-files

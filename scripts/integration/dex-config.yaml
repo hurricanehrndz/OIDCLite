@@ -1,0 +1,26 @@
+issuer: http://127.0.0.1:5556/dex
+storage:
+  type: memory
+web:
+  http: 127.0.0.1:5556
+oauth2:
+  skipApprovalScreen: true
+  passwordConnector: local
+staticClients:
+  - id: oidclite-test
+    name: OIDCLite integration tests
+    secret: oidclite-secret
+    redirectURIs:
+      - oidclite://openID
+  - id: oidclite-other
+    name: OIDCLite secondary integration client
+    secret: oidclite-other-secret
+    redirectURIs:
+      - oidclite-other://openID
+enablePasswordDB: true
+staticPasswords:
+  - email: admin@example.com
+    # bcrypt hash of "password" from dex's example config.
+    hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"
+    username: admin
+    userID: 08a8684b-db88-4b73-90a9-3cd1661f5466

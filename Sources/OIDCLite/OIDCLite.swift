@@ -1,39 +1,19 @@
 import CryptoKit
 import Foundation
 import os.log
-import WebKit
 
 // This library is intentionally a single-file implementation; suppress the file
 // size limit rather than split the published API (the main type is likewise
 // suppressed at its declaration).
 // swiftlint:disable file_length
 
-public enum OIDCLiteTokenResult {
-    case success
-    case passwordChanged
-    case error(String)
-}
+private struct OAuthErrorResponse: Decodable {
+    let error: String
+    let errorDescription: String?
 
-@available(macOS 11.0, *)
-// Not constrained to AnyObject: this is published API and the delegate is held
-// strongly, so adding a class-only requirement would be a breaking change.
-// swiftlint:disable:next class_delegate_protocol
-public protocol OIDCLiteDelegate {
-    func tokenFailure(message: String)
-    func tokenResponse(tokens: OIDCLite.TokenResponse)
-}
-
-@propertyWrapper
-struct IntConvertible: Decodable {
-    var wrappedValue: Int
-    init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        wrappedValue = 0
-        if let intValue = try? container.decode(Int.self) {
-            wrappedValue = intValue
-        } else if let stringValue = try? container.decode(String.self), let intValue = Int(stringValue) {
-            wrappedValue = intValue
-        }
+    enum CodingKeys: String, CodingKey {
+        case error
+        case errorDescription = "error_description"
     }
 }
 
@@ -53,38 +33,35 @@ extension CharacterSet {
     }()
 }
 
-struct RefreshTokenResponse: Decodable {
-    let accessToken, refreshToken, tokenType: String
-    @IntConvertible var expiresIn: Int
-    let expiresOn, extExpiresIn: String?
-
-    enum CodingKeys: String, CodingKey {
-        case accessToken = "access_token"
-        case expiresIn = "expires_in"
-        case expiresOn = "expires_on"
-        case refreshToken = "refresh_token"
-        case extExpiresIn = "ext_expires_in"
-        case tokenType = "token_type"
-    }
-}
-
-@available(macOS 11.0, *)
 // Large by design: this is the library's single public type.
 // swiftlint:disable:next type_body_length
-public class OIDCLite: NSObject {
+public struct OIDCLite: Sendable {
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier!,
+        subsystem: Bundle.main.bundleIdentifier ?? "OIDCLite",
         category: "oidc"
     )
 
-    public struct TokenResponse {
-        public var accessToken: String?
-        public var idToken: String?
-        public var refreshToken: String?
-        public var expiresIn: Int?
-        public var tokenType: String
-        public var scope: String?
-        public var jsonDict: [String: Any]?
+    public struct Endpoints: Sendable {
+        public let authorization: URL?
+        public let token: URL?
+        public let issuer: String?
+        public let jwksURI: URL?
+    }
+
+    public struct LoginRequest: Sendable {
+        public let url: URL
+        public let state: String
+        public let nonce: String
+        public let codeVerifier: String
+    }
+
+    public struct TokenResponse: Sendable {
+        public let accessToken: String?
+        public let idToken: String?
+        public let refreshToken: String?
+        public let expiresIn: Int?
+        public let tokenType: String
+        public let scope: String?
 
         public init(
             accessToken: String? = nil,
@@ -92,8 +69,7 @@ public class OIDCLite: NSObject {
             refreshToken: String? = nil,
             expiresIn: Int? = nil,
             tokenType: String = "bearer",
-            scope: String? = nil,
-            jsonDict: [String: Any]? = nil
+            scope: String? = nil
         ) {
             self.accessToken = accessToken
             self.idToken = idToken
@@ -101,16 +77,8 @@ public class OIDCLite: NSObject {
             self.expiresIn = expiresIn
             self.tokenType = tokenType
             self.scope = scope
-            self.jsonDict = jsonDict
         }
     }
-
-    // Constants, in case nothing else is supplied
-
-    public let kRedirectURI = "oidclite://openID"
-    public let kDefaultScopes = ["openid", "profile", "email", "offline_access"]
-
-    // OpenID settings, supplied on init()
 
     public let discoveryURL: String
     public let redirectURI: String
@@ -119,46 +87,9 @@ public class OIDCLite: NSObject {
     public let clientSecret: String?
     public let resource: String?
     public let additionalParameters: [String: String]?
+    let session: URLSession
 
-    // OpenID endpoints, gathered from the discoveryURL
-
-    public var OIDCAuthEndpoint: String?
-    public var OIDCTokenEndpoint: String?
-
-    // Used for PKCE, no need to be public
-
-    var codeVerifier = (UUID().uuidString + UUID().uuidString)
-
-    // URL Session bits, we make a new ephemeral session every time the class
-    // is invoked to ensure no lingering cookies
-
-    var dataTask: URLSessionDataTask?
-    var session = URLSession(configuration: URLSessionConfiguration.ephemeral, delegate: nil, delegateQueue: nil)
-
-    // delegate for callbacks
-
-    public var delegate: OIDCLiteDelegate?
-
-    public private(set) var state: String?
-    public private(set) var nonce: String?
-    private let queryItemKeys = OIDCQueryItemKeys()
-
-    private struct OIDCQueryItemKeys {
-        let clientId = "client_id"
-        let responseType = "response_type"
-        let scope = "scope"
-        let redirectUri = "redirect_uri"
-        let state = "state"
-        let codeChallengeMethod = "code_challenge_method"
-        let codeChallenge = "code_challenge"
-        let nonce = "nonce"
-        let grantType = "grant_type"
-        let username = "username"
-        let password = "password"
-        let resource = "resource"
-    }
-
-    /// Create a new OIDCLite object
+    /// Create a new OIDCLite value.
     /// - Parameters:
     ///   - discoveryURL: the full well-known openid-configuration URL,
     ///     e.g. https://my.idp.com/.well-known/openid-configuration
@@ -168,38 +99,18 @@ public class OIDCLite: NSObject {
     ///     Defaults to "oidclite://openID" if nothing is supplied
     ///   - scopes: optional custom scopes to be used in the OpenID Connect request.
     ///     If nothing is supplied ["openid", "profile", "email", "offline_access"] will be used
-    ///
+    ///   - additionalParameters: optional additional parameters for the authorization request
+    ///   - resource: optional resource for the resource owner password grant request
+    ///   - session: URL session used for every network request
     public init(
         discoveryURL: String,
         clientID: String,
-        clientSecret: String?,
-        redirectURI: String?,
-        scopes: [String]?,
+        clientSecret: String? = nil,
+        redirectURI: String? = nil,
+        scopes: [String]? = nil,
         additionalParameters: [String: String]? = nil,
-        useROPG _: Bool = false,
-        ropgUsername _: String? = nil,
-        ropgPassword _: String? = nil
-    ) {
-        self.discoveryURL = discoveryURL
-        self.clientID = clientID
-        self.clientSecret = clientSecret
-        self.redirectURI = redirectURI ?? "oidclite://openID"
-        self.scopes = scopes ?? ["openid", "profile", "email", "offline_access"]
-        self.additionalParameters = additionalParameters
-        resource = nil
-    }
-
-    public init(
-        discoveryURL: String,
-        clientID: String,
-        clientSecret: String?,
-        redirectURI: String?,
-        scopes: [String]?,
-        additionalParameters: [String: String]? = nil,
-        useROPG _: Bool = false,
-        ropgUsername _: String? = nil,
-        ropgPassword _: String? = nil,
-        resource: String? = nil
+        resource: String? = nil,
+        session: URLSession = URLSession(configuration: .ephemeral)
     ) {
         self.discoveryURL = discoveryURL
         self.clientID = clientID
@@ -208,241 +119,251 @@ public class OIDCLite: NSObject {
         self.scopes = scopes ?? ["openid", "profile", "email", "offline_access"]
         self.additionalParameters = additionalParameters
         self.resource = resource
+        self.session = session
     }
 
-    /// Generates the inital login URL which can be passed to ASWebAuthenticationSession
-    /// - Returns: A URL to be used with ASWebAuthenticationSession
-    public func createLoginURL() -> URL? {
-        state = UUID().uuidString
+    /// Generates the initial login URL which can be passed to ASWebAuthenticationSession.
+    public func createLoginURL(endpoints: Endpoints) throws -> LoginRequest {
+        guard let authorizationURL = endpoints.authorization else {
+            throw OIDCLiteError.missingEndpoint("authorization_endpoint")
+        }
 
-        var queryItems: [URLQueryItem] = []
+        let state = UUID().uuidString
+        let nonce = UUID().uuidString
+        let codeVerifier = UUID().uuidString + UUID().uuidString
+        let hash = SHA256.hash(data: Data(codeVerifier.utf8))
+        let challenge = Data(hash).base64EncodedString().base64URLEncoded()
 
-        let clientIdItem = URLQueryItem(name: queryItemKeys.clientId, value: clientID)
-        queryItems.append(clientIdItem)
+        var queryItems = [
+            URLQueryItem(name: "client_id", value: clientID),
+            URLQueryItem(name: "response_type", value: "code"),
+            URLQueryItem(name: "scope", value: scopes.joined(separator: " "))
+        ]
 
-        let responseTypeItem: URLQueryItem
-        let scopeItem: URLQueryItem
-
-        responseTypeItem = URLQueryItem(name: queryItemKeys.responseType, value: "code")
-        scopeItem = URLQueryItem(name: queryItemKeys.scope, value: scopes.joined(separator: " "))
-
-        queryItems.append(contentsOf: [responseTypeItem, scopeItem])
-
-        if let additionalParameters = additionalParameters {
+        if let additionalParameters {
             for (key, value) in additionalParameters {
-                let parameterItem = URLQueryItem(name: key, value: value)
-                queryItems.append(contentsOf: [parameterItem])
+                queryItems.append(URLQueryItem(name: key, value: value))
             }
         }
 
-        let redirectUriItem = URLQueryItem(name: queryItemKeys.redirectUri, value: redirectURI)
-        queryItems.append(redirectUriItem)
-        let stateItem = URLQueryItem(name: queryItemKeys.state, value: state)
-        queryItems.append(stateItem)
+        queryItems.append(contentsOf: [
+            URLQueryItem(name: "redirect_uri", value: redirectURI),
+            URLQueryItem(name: "state", value: state),
+            URLQueryItem(name: "code_challenge_method", value: "S256"),
+            URLQueryItem(name: "code_challenge", value: challenge),
+            URLQueryItem(name: "nonce", value: nonce)
+        ])
 
-        if let challengeData = codeVerifier.data(using: String.Encoding.ascii) {
-            let codeChallengeMethodItem = URLQueryItem(name: queryItemKeys.codeChallengeMethod, value: "S256")
-            let hash = SHA256.hash(data: challengeData)
-            let challengeData = Data(hash)
-            let challengeString = challengeData.base64EncodedString().base64URLEncoded()
-            let codeChallengeItem = URLQueryItem(name: queryItemKeys.codeChallenge, value: challengeString)
-            queryItems.append(contentsOf: [codeChallengeMethodItem, codeChallengeItem])
+        var components = URLComponents(url: authorizationURL, resolvingAgainstBaseURL: false)
+        components?.queryItems = queryItems
+        guard let url = components?.url else {
+            throw OIDCLiteError.missingEndpoint("authorization_endpoint")
         }
-
-        nonce = UUID().uuidString
-        let nonceItem = URLQueryItem(name: queryItemKeys.nonce, value: nonce)
-        queryItems.append(nonceItem)
-
-        guard let url = URL(string: OIDCAuthEndpoint ?? "") else {
-            return nil
-        }
-
-        var urlComponents = URLComponents(url: url, resolvingAgainstBaseURL: false)
-        urlComponents?.queryItems = queryItems
-        return urlComponents?.url
+        return LoginRequest(url: url, state: state, nonce: nonce, codeVerifier: codeVerifier)
     }
 
-    func processOIDCResponse(_ data: Data) async throws -> TokenResponse {
-        var tokenResponse = TokenResponse()
+    /// The same standards-based `application/x-www-form-urlencoded` codec is used for OAuth token
+    /// requests, including Entra and Okta ROPG.
+    /// https://theproductguy.in/blogs/url-encoding-for-forms/
+    static func formEncodedComponent(_ component: String) -> String {
+        let normalized = component
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .replacingOccurrences(of: "\n", with: "\r\n")
+        return (normalized.addingPercentEncoding(withAllowedCharacters: .urlQueryValueAllowed) ?? normalized)
+            .replacingOccurrences(of: " ", with: "+")
+    }
 
+    static func formEncodedBody(_ params: [(String, String)]) -> Data {
+        Data(params.map { key, value in
+            "\(formEncodedComponent(key))=\(formEncodedComponent(value))"
+        }.joined(separator: "&").utf8)
+    }
+
+    static func oauthError(from data: Data, status: Int) -> OIDCLiteError {
+        if let response = try? JSONDecoder().decode(OAuthErrorResponse.self, from: data) {
+            return .oauthError(
+                code: response.error,
+                description: response.errorDescription,
+                httpStatus: status
+            )
+        }
+        return .authFailure(String(data: data, encoding: .utf8) ?? "Unknown error (HTTP \(status))")
+    }
+
+    func processOIDCResponse(_ data: Data) throws -> TokenResponse {
         let jsonResult = try JSONSerialization.jsonObject(
             with: data,
             options: JSONSerialization.ReadingOptions.mutableContainers
         ) as? [String: Any]
 
-        if let tokenType = jsonResult?["token_type"] as? String {
-            tokenResponse.tokenType = tokenType
-        }
-
+        let expiresIn: Int?
         if let expires = jsonResult?["expires_in"] as? Int {
-            tokenResponse.expiresIn = expires
+            expiresIn = expires
+        } else if let expires = jsonResult?["expires_in"] as? String {
+            expiresIn = Int(expires)
+        } else {
+            expiresIn = nil
         }
 
-        if let expires = jsonResult?["expires_in"] as? String {
-            tokenResponse.expiresIn = Int(expires)!
-        }
-
-        if let scope = jsonResult?["scope"] as? String {
-            tokenResponse.scope = scope
-        }
-
-        if let accessToken = jsonResult?["access_token"] as? String {
-            tokenResponse.accessToken = accessToken
-        }
-
-        if let refreshToken = jsonResult?["refresh_token"] as? String {
-            tokenResponse.refreshToken = refreshToken
-        }
-
-        if let idToken = jsonResult?["id_token"] as? String {
-            tokenResponse.idToken = idToken
-        }
-        tokenResponse.jsonDict = jsonResult
-
-        return tokenResponse
+        return TokenResponse(
+            accessToken: jsonResult?["access_token"] as? String,
+            idToken: jsonResult?["id_token"] as? String,
+            refreshToken: jsonResult?["refresh_token"] as? String,
+            expiresIn: expiresIn,
+            tokenType: jsonResult?["token_type"] as? String ?? "bearer",
+            scope: jsonResult?["scope"] as? String
+        )
     }
 
-    /// Turn a code, returned from a successful ASWebAuthenticationSession, into a token set
-    /// - Parameter code: the code generated by a successful authentication
-    public func getToken(code: String, basicAuth: Bool = false) async throws -> TokenResponse {
-        guard let path = OIDCTokenEndpoint else {
-            throw OIDCLiteError.authFailure("No token endpoint found")
+    /// Turn a code, returned from a successful ASWebAuthenticationSession, into a token set.
+    public func getToken(
+        code: String,
+        codeVerifier: String?,
+        endpoints: Endpoints,
+        basicAuth: Bool = false
+    ) async throws -> TokenResponse {
+        guard let tokenURL = endpoints.token else {
+            throw OIDCLiteError.missingEndpoint("token_endpoint")
         }
-
-        guard let tokenURL = URL(string: path) else {
-            throw OIDCLiteError.authFailure("Unable to make the token endpoint into a URL")
-        }
-        var body = "grant_type=authorization_code"
+        var parameters = [
+            ("grant_type", "authorization_code"),
+            ("client_id", clientID)
+        ]
         var headers = [
             "Accept": "application/json",
             "Content-Type": "application/x-www-form-urlencoded"
         ]
 
-        body.append("&client_id=" + clientID)
-
         if let secret = clientSecret {
             if basicAuth {
-                headers["Authorization"] = "Basic "
-                    + ((clientID + ":" + secret).data(using: .utf8)?.base64EncodedString() ?? "")
+                headers["Authorization"] = "Basic " + Data("\(clientID):\(secret)".utf8).base64EncodedString()
             } else {
-                body.append("&client_secret=" + secret)
+                parameters.append(("client_secret", secret))
             }
         }
 
-        body.append("&redirect_uri=" + redirectURI.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!)
-        let codeParam = "&code=" + code
-
-        body.append(codeParam)
-        body.append("&code_verifier=" + codeVerifier)
+        parameters.append(contentsOf: [
+            ("redirect_uri", redirectURI),
+            ("code", code)
+        ])
+        if let codeVerifier {
+            parameters.append(("code_verifier", codeVerifier))
+        }
 
         var req = URLRequest(url: tokenURL)
         req.httpMethod = "POST"
-        req.httpBody = body.data(using: .utf8)
-
+        req.httpBody = Self.formEncodedBody(parameters)
         req.allHTTPHeaderFields = headers
 
-        let (data, response) = try await URLSession.shared.data(for: req)
-
-        if let response = response as? HTTPURLResponse,
-           response.statusCode == 200 {
-            return try await processOIDCResponse(data)
-
-        } else {
-            do {
-                if let jsonResult = try JSONSerialization.jsonObject(
-                    with: data,
-                    options: JSONSerialization.ReadingOptions.mutableContainers
-                ) as? [String: Any] {
-                    throw OIDCLiteError.authFailure(prettyPrintInfo(dict: jsonResult))
-                }
-                throw OIDCLiteError.authFailure(response.debugDescription)
-            }
+        let (data, response) = try await session.data(for: req)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200 ..< 300).contains(status) else {
+            throw Self.oauthError(from: data, status: status)
         }
+        return try processOIDCResponse(data)
     }
 
-    /// Function to parse the openid-configuration file into all of the requisite endpoints
-    /// Function to async parse the openid-configuration file into all of the requisite endpoints
-    public func getEndpoints() async throws {
-        // make sure we can actually make a URL from the discoveryURL that we have
-        guard let host = URL(string: discoveryURL) else { return }
+    /// Parse the openid-configuration document into endpoints.
+    public func getEndpoints() async throws -> Endpoints {
+        guard let host = URL(string: discoveryURL) else {
+            throw OIDCLiteError.unableToLoadEndpoint
+        }
         var req = URLRequest(url: host)
-
-        let headers = [
+        req.allHTTPHeaderFields = [
             "Accept": "application/json",
             "Cache-Control": "no-cache"
         ]
-
-        req.allHTTPHeaderFields = headers
         req.httpMethod = "GET"
+
         let (data, response) = try await session.data(for: req)
-        if let response = response as? HTTPURLResponse,
-           (200 ... 228).contains(response.statusCode) {
-            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                OIDCAuthEndpoint = json["authorization_endpoint"] as? String ?? ""
-                OIDCTokenEndpoint = json["token_endpoint"] as? String ?? ""
-            } else {
-                throw OIDCLiteError.unableToParseEndpoint
-            }
-        } else {
+        guard let response = response as? HTTPURLResponse,
+              (200 ..< 300).contains(response.statusCode) else {
             throw OIDCLiteError.unableToLoadEndpoint
         }
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw OIDCLiteError.unableToParseEndpoint
+        }
+
+        return Endpoints(
+            authorization: (json["authorization_endpoint"] as? String).flatMap(URL.init(string:)),
+            token: (json["token_endpoint"] as? String).flatMap(URL.init(string:)),
+            issuer: json["issuer"] as? String,
+            jwksURI: (json["jwks_uri"] as? String).flatMap(URL.init(string:))
+        )
     }
 
-    /// Parse the response  from a redirect with a possible code in it.
-    /// - Parameter url: redirect URL
-    public func processResponseURL(url: URL) throws {
-        if let query = url.query {
-            let items = query.components(separatedBy: "&")
-            for item in items where item.starts(with: "code=") {
-                Task {
-                    try await getToken(code: item.replacingOccurrences(of: "code=", with: ""))
-                }
-                return
+    /// Parse an authorization redirect and exchange its code for tokens.
+    public func processResponseURL(
+        url: URL,
+        login: LoginRequest,
+        endpoints: Endpoints,
+        basicAuth: Bool = false
+    ) async throws -> TokenResponse {
+        let queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+        guard queryItems?.first(where: { $0.name == "state" })?.value == login.state else {
+            throw OIDCLiteError.stateMismatch
+        }
+        guard let code = queryItems?.first(where: { $0.name == "code" })?.value else {
+            throw OIDCLiteError.unableToFindCode
+        }
+        return try await getToken(
+            code: code,
+            codeVerifier: login.codeVerifier,
+            endpoints: endpoints,
+            basicAuth: basicAuth
+        )
+    }
+
+    public func refreshTokens(
+        _ refreshToken: String,
+        endpoints: Endpoints,
+        basicAuth: Bool = false
+    ) async throws -> TokenResponse {
+        var parameters = [
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refreshToken),
+            ("client_id", clientID)
+        ]
+        var headers = ["Content-Type": "application/x-www-form-urlencoded"]
+        if let clientSecret {
+            if basicAuth {
+                headers["Authorization"] = "Basic "
+                    + Data("\(clientID):\(clientSecret)".utf8).base64EncodedString()
+            } else {
+                parameters.append(("client_secret", clientSecret))
             }
         }
-        throw OIDCLiteError.unableToFindCode
-    }
 
-    public func refreshTokens(_ refreshToken: String) async throws -> TokenResponse {
-        var parameters = "grant_type=refresh_token&refresh_token=\(refreshToken)&client_id=\(clientID)"
-        if let clientSecret = clientSecret {
-            parameters.append("&client_secret=\(clientSecret)")
-        }
-
-        let postData = parameters.data(using: .utf8)
-
-        guard let path = OIDCTokenEndpoint else {
-            throw OIDCLiteError.authFailure("No token endpoint found")
-        }
-
-        guard let tokenURL = URL(string: path) else {
-            throw OIDCLiteError.authFailure("Unable to make the token endpoint into a URL")
+        guard let tokenURL = endpoints.token else {
+            throw OIDCLiteError.missingEndpoint("token_endpoint")
         }
 
         var req = URLRequest(url: tokenURL)
-
-        req.addValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-
+        req.allHTTPHeaderFields = headers
         req.httpMethod = "POST"
-        req.httpBody = postData
+        req.httpBody = Self.formEncodedBody(parameters)
 
-        let (data, _) = try await URLSession.shared.data(for: req)
-
-        return try await processOIDCResponse(data)
+        let (data, response) = try await session.data(for: req)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200 ..< 300).contains(status) else {
+            throw Self.oauthError(from: data, status: status)
+        }
+        return try processOIDCResponse(data)
     }
 
-    // ROPG intentionally handles many auth/error branches in one place; the size
-    // and complexity limits are relaxed for this single method rather than split
-    // the flow across helpers.
-    // swiftlint:disable:next cyclomatic_complexity function_body_length
+    // ROPG intentionally handles its auth/error branches in one place rather
+    // than split the flow across helpers.
+    // swiftlint:disable:next function_body_length
     public func requestTokenWithROPG(
         username: String,
         password: String,
-        basicAuth: Bool,
-        overrideErrors: [String]?
+        endpoints: Endpoints,
+        basicAuth: Bool = false,
+        overrideErrors: [String]? = nil
     ) async throws -> TokenResponse? {
-        guard let urlString = OIDCTokenEndpoint, let url = URL(string: urlString) else {
-            throw OIDCLiteError.unableToLoadEndpoint
+        guard let url = endpoints.token else {
+            throw OIDCLiteError.missingEndpoint("token_endpoint")
         }
         var req = URLRequest(url: url)
 
@@ -452,38 +373,24 @@ public class OIDCLite: NSObject {
             "Content-Type": "application/x-www-form-urlencoded"
         ]
 
-        let scopesURLString = scopes.joined(separator: " ")
-            .addingPercentEncoding(withAllowedCharacters: .urlQueryValueAllowed)?
-            .replacingOccurrences(of: " ", with: "+")
-        let encodedUsername = username
-            .addingPercentEncoding(withAllowedCharacters: .urlQueryValueAllowed)?
-            .replacingOccurrences(of: " ", with: "+")
-        let encodedPassword = password
-            .addingPercentEncoding(withAllowedCharacters: .urlQueryValueAllowed)?
-            .replacingOccurrences(of: " ", with: "+")
-
-        var reqComponents = URLComponents()
-        var queryItems = [
-            URLQueryItem(name: queryItemKeys.grantType, value: "password"),
-            URLQueryItem(name: queryItemKeys.scope, value: scopesURLString),
-            URLQueryItem(name: queryItemKeys.username, value: encodedUsername),
-            URLQueryItem(name: queryItemKeys.password, value: encodedPassword)
+        var parameters = [
+            ("grant_type", "password"),
+            ("scope", scopes.joined(separator: " ")),
+            ("username", username),
+            ("password", password)
         ]
 
-        let encodedResource = resource?
-            .addingPercentEncoding(withAllowedCharacters: .urlQueryValueAllowed)?
-            .replacingOccurrences(of: " ", with: "+")
-        if let encodedResource = encodedResource {
-            queryItems.append(URLQueryItem(name: queryItemKeys.resource, value: encodedResource))
+        if let resource {
+            parameters.append(("resource", resource))
         }
         if !basicAuth {
-            queryItems.append(URLQueryItem(name: "client_id", value: clientID))
-            if let clientSecret = clientSecret {
-                queryItems.append(URLQueryItem(name: "client_secret", value: clientSecret))
+            parameters.append(("client_id", clientID))
+            if let clientSecret {
+                parameters.append(("client_secret", clientSecret))
             }
         } else {
             var loginString = clientID
-            if let clientSecret = clientSecret {
+            if let clientSecret {
                 loginString.append(":" + clientSecret)
             }
             if let data = loginString.data(using: .utf8) {
@@ -493,23 +400,16 @@ public class OIDCLite: NSObject {
             }
         }
 
-        reqComponents.queryItems = queryItems
         req.allHTTPHeaderFields = headers
         req.httpMethod = "POST"
-        req.httpBody = reqComponents.query?.data(using: .utf8)
+        req.httpBody = Self.formEncodedBody(parameters)
 
-        let (data, response) = try await URLSession.shared.data(for: req)
-
-        var responseCode = 0
-        if let response = response as? HTTPURLResponse {
-            responseCode = response.statusCode
-        }
-        if let response = response as? HTTPURLResponse,
-           (200 ... 228).contains(response.statusCode) {
-            return try await processOIDCResponse(data)
-        } else if let response = response as? HTTPURLResponse,
-                  (400 ... 403).contains(response.statusCode),
-                  let overrideErrors = overrideErrors,
+        let (data, response) = try await session.data(for: req)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if (200 ..< 300).contains(status) {
+            return try processOIDCResponse(data)
+        } else if (400 ... 403).contains(status),
+                  let overrideErrors,
                   let errorMessage = String(data: data, encoding: .utf8) {
             var success = false
             for overrideError in overrideErrors where errorMessage.contains(overrideError) {
@@ -524,57 +424,8 @@ public class OIDCLite: NSObject {
                 // was good. So returning nil means no tokens but not an error
                 // (we would throw if there was an error)
                 return nil
-            } else {
-                throw OIDCLiteError.authFailure(
-                    "Status code:\(responseCode), Did not match override:"
-                        + (String(data: data, encoding: .utf8) ?? "Unknown error")
-                )
-            }
-
-        } else {
-            throw OIDCLiteError.authFailure(
-                "Status code:\(responseCode), Not 400, no override, or bad error message:"
-                    + (String(data: data, encoding: .utf8) ?? "Unknown error")
-            )
-        }
-    }
-
-    private func prettyPrintInfo(dict: [String: Any]) -> String {
-        var result = ""
-
-        for item in dict {
-            result.append("\(item.key):  ")
-            result.append(String(describing: item.value))
-            result.append("\n")
-        }
-
-        return result
-    }
-}
-
-// Allow OIDCLite to be used as a WKNavigationDelegate
-// This works for when you're not using ASWebAuthenticationSession
-
-@available(macOS 11.0, *)
-extension OIDCLite: WKNavigationDelegate {
-    public func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation _: WKNavigation!) {
-        if (webView.url?.absoluteString.starts(with: redirectURI)) ?? false {
-            var code = ""
-            let fullCommand = webView.url?.absoluteString ?? ""
-            let pathParts = fullCommand.components(separatedBy: "&")
-            for part in pathParts where part.contains("code=") {
-                code = part.replacingOccurrences(of: redirectURI + "?", with: "")
-                    .replacingOccurrences(of: "code=", with: "")
-                Task {
-                    do {
-                        let tokenReponse = try await self.getToken(code: code)
-                        delegate?.tokenResponse(tokens: tokenReponse)
-                    } catch {
-                        delegate?.tokenFailure(message: "failure getting token")
-                    }
-                }
-                return
             }
         }
+        throw Self.oauthError(from: data, status: status)
     }
 }

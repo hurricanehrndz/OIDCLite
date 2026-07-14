@@ -7,6 +7,12 @@ repos:
       - id: check-merge-conflict
       - id: check-yaml
 
+  - repo: https://github.com/executablebooks/mdformat
+    rev: 1.0.0
+    hooks:
+      - id: mdformat
+        exclude: ^AGENTS\.md$
+
   - repo: local
     hooks:
       - id: swiftformat
