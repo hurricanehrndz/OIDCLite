@@ -4,6 +4,7 @@ import Foundation
 import Testing
 
 @Suite(.serialized)
+// swiftlint:disable:next type_body_length
 struct OIDCLiteTests {
     let discoveryURL = "https://example.com/.well-known/openid-configuration"
     let clientID = "BC76BE32-289C-4A56-B5F2-ACAB2B695EDB"
@@ -160,6 +161,162 @@ struct OIDCLiteTests {
         #expect(tokens.tokenType == "Bearer")
         #expect(tokens.scope == "openid profile")
         #expect(StubURLProtocol.requests.count == 1)
+    }
+
+    @Test func formEncodingFollowsURLStandard() {
+        let vectors = [
+            ("key", "AZaz09*-._", "key=AZaz09*-._"),
+            ("key", " ", "key=+"),
+            ("key", "\r", "key=%0D%0A"),
+            ("key", "\n", "key=%0D%0A"),
+            ("key", "\r\n", "key=%0D%0A"),
+            ("key", "+&=%", "key=%2B%26%3D%25"),
+            ("key", "é", "key=%C3%A9"),
+            ("hostile+&=% name", "value", "hostile%2B%26%3D%25+name=value")
+        ]
+
+        for (name, value, expected) in vectors {
+            let body = OIDCLite.formEncodedBody([(name, value)])
+            #expect(String(data: body, encoding: .utf8) == expected)
+        }
+    }
+
+    @Test func tokenRequestsEncodeHostileValuesExactlyOnce() async throws {
+        let success = Data("{}".utf8)
+        let session = try StubURLProtocol.session(responses: [
+            (response(status: 201), success),
+            (response(status: 202), success),
+            (response(status: 299), success)
+        ])
+        let oidc = OIDCLite(
+            discoveryURL: discoveryURL,
+            clientID: "client",
+            clientSecret: "p+s&s=w%rd",
+            scopes: ["openid", "custom scope"],
+            session: session
+        )
+
+        _ = try await oidc.getToken(
+            code: "code+&=%",
+            codeVerifier: "verify value+",
+            endpoints: endpoints()
+        )
+        _ = try await oidc.refreshTokens("refresh+&=%", endpoints: endpoints())
+        _ = try await oidc.requestTokenWithROPG(
+            username: "user@example.com",
+            password: "pass word+1",
+            endpoints: endpoints()
+        )
+
+        let authorizationCodeBody = [
+            "grant_type=authorization_code",
+            "client_id=client",
+            "client_secret=p%2Bs%26s%3Dw%25rd",
+            "redirect_uri=oidclite%3A%2F%2FopenID",
+            "code=code%2B%26%3D%25",
+            "code_verifier=verify+value%2B"
+        ].joined(separator: "&")
+        let refreshBody = [
+            "grant_type=refresh_token",
+            "refresh_token=refresh%2B%26%3D%25",
+            "client_id=client",
+            "client_secret=p%2Bs%26s%3Dw%25rd"
+        ].joined(separator: "&")
+        let passwordBody = [
+            "grant_type=password",
+            "scope=openid+custom+scope",
+            "username=user%40example.com",
+            "password=pass+word%2B1",
+            "client_id=client",
+            "client_secret=p%2Bs%26s%3Dw%25rd"
+        ].joined(separator: "&")
+
+        #expect(requestBody(at: 0) == authorizationCodeBody)
+        #expect(requestBody(at: 1) == refreshBody)
+        #expect(requestBody(at: 2) == passwordBody)
+    }
+
+    @Test func basicAuthOmitsSecretFromTokenRequestBodies() async throws {
+        let success = Data("{}".utf8)
+        let session = try StubURLProtocol.session(responses: [
+            (response(status: 200), success),
+            (response(status: 200), success)
+        ])
+        let oidc = OIDCLite(
+            discoveryURL: discoveryURL,
+            clientID: "client",
+            clientSecret: "p+s&s=w%rd",
+            session: session
+        )
+
+        _ = try await oidc.getToken(
+            code: "code",
+            codeVerifier: nil,
+            endpoints: endpoints(),
+            basicAuth: true
+        )
+        _ = try await oidc.refreshTokens("refresh", endpoints: endpoints(), basicAuth: true)
+
+        let authorization = "Basic " + Data("client:p+s&s=w%rd".utf8).base64EncodedString()
+        #expect(StubURLProtocol.requests[0].value(forHTTPHeaderField: "Authorization") == authorization)
+        #expect(StubURLProtocol.requests[1].value(forHTTPHeaderField: "Authorization") == authorization)
+        #expect(requestBody(at: 0) == [
+            "grant_type=authorization_code",
+            "client_id=client",
+            "redirect_uri=oidclite%3A%2F%2FopenID",
+            "code=code"
+        ].joined(separator: "&"))
+        #expect(requestBody(at: 1) == "grant_type=refresh_token&refresh_token=refresh&client_id=client")
+    }
+
+    @Test func refreshThrowsTypedOAuthError() async throws {
+        let body = Data(#"{"error":"invalid_grant"}"#.utf8)
+        let session = try StubURLProtocol.session(responses: [(response(status: 400), body)])
+        let oidc = OIDCLite(discoveryURL: discoveryURL, clientID: clientID, session: session)
+
+        await #expect(throws: OIDCLiteError.oauthError(
+            code: "invalid_grant",
+            description: nil,
+            httpStatus: 400
+        )) {
+            try await oidc.refreshTokens("garbage", endpoints: endpoints())
+        }
+    }
+
+    @Test func ropgPreservesRawBodyOverrideMatching() async throws {
+        let body = Data(
+            #"{"error":"invalid_grant","error_description":"AADSTS50076: multi-factor authentication required"}"#.utf8
+        )
+        let session = try StubURLProtocol.session(responses: [
+            (response(status: 400), body),
+            (response(status: 400), body)
+        ])
+        let oidc = OIDCLite(discoveryURL: discoveryURL, clientID: clientID, session: session)
+
+        let overridden = try await oidc.requestTokenWithROPG(
+            username: "user",
+            password: "password",
+            endpoints: endpoints(),
+            overrideErrors: ["AADSTS50076"]
+        )
+        #expect(overridden == nil)
+
+        await #expect(throws: OIDCLiteError.oauthError(
+            code: "invalid_grant",
+            description: "AADSTS50076: multi-factor authentication required",
+            httpStatus: 400
+        )) {
+            try await oidc.requestTokenWithROPG(
+                username: "user",
+                password: "password",
+                endpoints: endpoints(),
+                overrideErrors: ["AADSTS50079"]
+            )
+        }
+    }
+
+    private func requestBody(at index: Int) -> String? {
+        StubURLProtocol.requests[index].httpBody.flatMap { String(data: $0, encoding: .utf8) }
     }
 
     private func endpoints() -> OIDCLite.Endpoints {

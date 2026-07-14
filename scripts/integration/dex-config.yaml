@@ -12,6 +12,11 @@ staticClients:
     secret: oidclite-secret
     redirectURIs:
       - oidclite://openID
+  - id: oidclite-other
+    name: OIDCLite secondary integration client
+    secret: oidclite-other-secret
+    redirectURIs:
+      - oidclite-other://openID
 enablePasswordDB: true
 staticPasswords:
   - email: admin@example.com

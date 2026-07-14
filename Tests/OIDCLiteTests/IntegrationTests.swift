@@ -24,9 +24,8 @@ struct OIDCLiteIntegrationTests {
         #expect(tokens.refreshToken != nil)
     }
 
-    @Test func ropgRejectsWrongPassword() async throws {
+    @Test func ropgRejectsWrongPasswordWithTypedError() async throws {
         let (oidc, endpoints) = try await configuredOIDC()
-        var rejected = false
 
         do {
             _ = try await oidc.requestTokenWithROPG(
@@ -34,11 +33,13 @@ struct OIDCLiteIntegrationTests {
                 password: "wrong-password",
                 endpoints: endpoints
             )
+            Issue.record("dex accepted an invalid password")
+        } catch let OIDCLiteError.oauthError(code, _, status) {
+            #expect(code == "access_denied")
+            #expect(status == 401)
         } catch {
-            rejected = true
+            Issue.record("unexpected error: \(error)")
         }
-
-        #expect(rejected, "dex accepted an invalid password")
     }
 
     @Test func refreshTokenRefreshesSuccessfully() async throws {
@@ -49,6 +50,30 @@ struct OIDCLiteIntegrationTests {
 
         #expect(refreshedTokens.accessToken != nil)
         #expect(refreshedTokens.refreshToken != nil)
+    }
+
+    @Test func refreshTokenFromAnotherClientThrowsInvalidGrant() async throws {
+        let (oidc, endpoints) = try await configuredOIDC()
+        let initialTokens = try await passwordTokens(from: oidc, endpoints: endpoints)
+        let refreshToken = try #require(initialTokens.refreshToken)
+        let issuer = try #require(ProcessInfo.processInfo.environment["DEX_ISSUER"])
+        let otherOIDC = OIDCLite(
+            discoveryURL: "\(issuer)/.well-known/openid-configuration",
+            clientID: "oidclite-other",
+            clientSecret: "oidclite-other-secret"
+        )
+        let otherEndpoints = try await otherOIDC.getEndpoints()
+
+        do {
+            _ = try await otherOIDC.refreshTokens(refreshToken, endpoints: otherEndpoints)
+            Issue.record("dex accepted a refresh token issued to another client")
+        } catch let OIDCLiteError.oauthError(code, description, status) {
+            #expect(code == "invalid_grant")
+            #expect(description != nil)
+            #expect(status == 400)
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
     }
 
     @Test func authorizationCodeFlowExchangesCodeWithPKCE() async throws {

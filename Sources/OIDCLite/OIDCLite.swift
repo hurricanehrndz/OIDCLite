@@ -7,6 +7,16 @@ import os.log
 // suppressed at its declaration).
 // swiftlint:disable file_length
 
+private struct OAuthErrorResponse: Decodable {
+    let error: String
+    let errorDescription: String?
+
+    enum CodingKeys: String, CodingKey {
+        case error
+        case errorDescription = "error_description"
+    }
+}
+
 extension CharacterSet {
     static let urlQueryValueAllowed: CharacterSet = {
         // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/encodeURIComponent
@@ -152,6 +162,35 @@ public struct OIDCLite: Sendable {
         return LoginRequest(url: url, state: state, nonce: nonce, codeVerifier: codeVerifier)
     }
 
+    /// The same standards-based `application/x-www-form-urlencoded` codec is used for OAuth token
+    /// requests, including Entra and Okta ROPG.
+    /// https://theproductguy.in/blogs/url-encoding-for-forms/
+    static func formEncodedComponent(_ component: String) -> String {
+        let normalized = component
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .replacingOccurrences(of: "\n", with: "\r\n")
+        return (normalized.addingPercentEncoding(withAllowedCharacters: .urlQueryValueAllowed) ?? normalized)
+            .replacingOccurrences(of: " ", with: "+")
+    }
+
+    static func formEncodedBody(_ params: [(String, String)]) -> Data {
+        Data(params.map { key, value in
+            "\(formEncodedComponent(key))=\(formEncodedComponent(value))"
+        }.joined(separator: "&").utf8)
+    }
+
+    static func oauthError(from data: Data, status: Int) -> OIDCLiteError {
+        if let response = try? JSONDecoder().decode(OAuthErrorResponse.self, from: data) {
+            return .oauthError(
+                code: response.error,
+                description: response.errorDescription,
+                httpStatus: status
+            )
+        }
+        return .authFailure(String(data: data, encoding: .utf8) ?? "Unknown error (HTTP \(status))")
+    }
+
     func processOIDCResponse(_ data: Data) throws -> TokenResponse {
         let jsonResult = try JSONSerialization.jsonObject(
             with: data,
@@ -187,52 +226,42 @@ public struct OIDCLite: Sendable {
         guard let tokenURL = endpoints.token else {
             throw OIDCLiteError.missingEndpoint("token_endpoint")
         }
-        var body = "grant_type=authorization_code"
+        var parameters = [
+            ("grant_type", "authorization_code"),
+            ("client_id", clientID)
+        ]
         var headers = [
             "Accept": "application/json",
             "Content-Type": "application/x-www-form-urlencoded"
         ]
 
-        body.append("&client_id=" + clientID)
-
         if let secret = clientSecret {
             if basicAuth {
-                headers["Authorization"] = "Basic "
-                    + ((clientID + ":" + secret).data(using: .utf8)?.base64EncodedString() ?? "")
+                headers["Authorization"] = "Basic " + Data("\(clientID):\(secret)".utf8).base64EncodedString()
             } else {
-                body.append("&client_secret=" + secret)
+                parameters.append(("client_secret", secret))
             }
         }
 
-        let encodedRedirectURI = redirectURI
-            .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? redirectURI
-        body.append("&redirect_uri=" + encodedRedirectURI)
-        body.append("&code=" + code)
+        parameters.append(contentsOf: [
+            ("redirect_uri", redirectURI),
+            ("code", code)
+        ])
         if let codeVerifier {
-            body.append("&code_verifier=" + codeVerifier)
+            parameters.append(("code_verifier", codeVerifier))
         }
 
         var req = URLRequest(url: tokenURL)
         req.httpMethod = "POST"
-        req.httpBody = body.data(using: .utf8)
+        req.httpBody = Self.formEncodedBody(parameters)
         req.allHTTPHeaderFields = headers
 
         let (data, response) = try await session.data(for: req)
-
-        if let response = response as? HTTPURLResponse,
-           response.statusCode == 200 {
-            return try processOIDCResponse(data)
-        } else {
-            do {
-                if let jsonResult = try JSONSerialization.jsonObject(
-                    with: data,
-                    options: JSONSerialization.ReadingOptions.mutableContainers
-                ) as? [String: Any] {
-                    throw OIDCLiteError.authFailure(prettyPrintInfo(dict: jsonResult))
-                }
-                throw OIDCLiteError.authFailure(response.debugDescription)
-            }
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200 ..< 300).contains(status) else {
+            throw Self.oauthError(from: data, status: status)
         }
+        return try processOIDCResponse(data)
     }
 
     /// Parse the openid-configuration document into endpoints.
@@ -286,10 +315,24 @@ public struct OIDCLite: Sendable {
         )
     }
 
-    public func refreshTokens(_ refreshToken: String, endpoints: Endpoints) async throws -> TokenResponse {
-        var parameters = "grant_type=refresh_token&refresh_token=\(refreshToken)&client_id=\(clientID)"
+    public func refreshTokens(
+        _ refreshToken: String,
+        endpoints: Endpoints,
+        basicAuth: Bool = false
+    ) async throws -> TokenResponse {
+        var parameters = [
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refreshToken),
+            ("client_id", clientID)
+        ]
+        var headers = ["Content-Type": "application/x-www-form-urlencoded"]
         if let clientSecret {
-            parameters.append("&client_secret=\(clientSecret)")
+            if basicAuth {
+                headers["Authorization"] = "Basic "
+                    + Data("\(clientID):\(clientSecret)".utf8).base64EncodedString()
+            } else {
+                parameters.append(("client_secret", clientSecret))
+            }
         }
 
         guard let tokenURL = endpoints.token else {
@@ -297,18 +340,21 @@ public struct OIDCLite: Sendable {
         }
 
         var req = URLRequest(url: tokenURL)
-        req.addValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        req.allHTTPHeaderFields = headers
         req.httpMethod = "POST"
-        req.httpBody = parameters.data(using: .utf8)
+        req.httpBody = Self.formEncodedBody(parameters)
 
-        let (data, _) = try await session.data(for: req)
+        let (data, response) = try await session.data(for: req)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200 ..< 300).contains(status) else {
+            throw Self.oauthError(from: data, status: status)
+        }
         return try processOIDCResponse(data)
     }
 
-    // ROPG intentionally handles many auth/error branches in one place; the size
-    // and complexity limits are relaxed for this single method rather than split
-    // the flow across helpers.
-    // swiftlint:disable:next cyclomatic_complexity function_body_length
+    // ROPG intentionally handles its auth/error branches in one place rather
+    // than split the flow across helpers.
+    // swiftlint:disable:next function_body_length
     public func requestTokenWithROPG(
         username: String,
         password: String,
@@ -327,34 +373,20 @@ public struct OIDCLite: Sendable {
             "Content-Type": "application/x-www-form-urlencoded"
         ]
 
-        let scopesURLString = scopes.joined(separator: " ")
-            .addingPercentEncoding(withAllowedCharacters: .urlQueryValueAllowed)?
-            .replacingOccurrences(of: " ", with: "+")
-        let encodedUsername = username
-            .addingPercentEncoding(withAllowedCharacters: .urlQueryValueAllowed)?
-            .replacingOccurrences(of: " ", with: "+")
-        let encodedPassword = password
-            .addingPercentEncoding(withAllowedCharacters: .urlQueryValueAllowed)?
-            .replacingOccurrences(of: " ", with: "+")
-
-        var reqComponents = URLComponents()
-        var queryItems = [
-            URLQueryItem(name: "grant_type", value: "password"),
-            URLQueryItem(name: "scope", value: scopesURLString),
-            URLQueryItem(name: "username", value: encodedUsername),
-            URLQueryItem(name: "password", value: encodedPassword)
+        var parameters = [
+            ("grant_type", "password"),
+            ("scope", scopes.joined(separator: " ")),
+            ("username", username),
+            ("password", password)
         ]
 
-        let encodedResource = resource?
-            .addingPercentEncoding(withAllowedCharacters: .urlQueryValueAllowed)?
-            .replacingOccurrences(of: " ", with: "+")
-        if let encodedResource {
-            queryItems.append(URLQueryItem(name: "resource", value: encodedResource))
+        if let resource {
+            parameters.append(("resource", resource))
         }
         if !basicAuth {
-            queryItems.append(URLQueryItem(name: "client_id", value: clientID))
+            parameters.append(("client_id", clientID))
             if let clientSecret {
-                queryItems.append(URLQueryItem(name: "client_secret", value: clientSecret))
+                parameters.append(("client_secret", clientSecret))
             }
         } else {
             var loginString = clientID
@@ -368,22 +400,15 @@ public struct OIDCLite: Sendable {
             }
         }
 
-        reqComponents.queryItems = queryItems
         req.allHTTPHeaderFields = headers
         req.httpMethod = "POST"
-        req.httpBody = reqComponents.query?.data(using: .utf8)
+        req.httpBody = Self.formEncodedBody(parameters)
 
         let (data, response) = try await session.data(for: req)
-
-        var responseCode = 0
-        if let response = response as? HTTPURLResponse {
-            responseCode = response.statusCode
-        }
-        if let response = response as? HTTPURLResponse,
-           (200 ... 228).contains(response.statusCode) {
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if (200 ..< 300).contains(status) {
             return try processOIDCResponse(data)
-        } else if let response = response as? HTTPURLResponse,
-                  (400 ... 403).contains(response.statusCode),
+        } else if (400 ... 403).contains(status),
                   let overrideErrors,
                   let errorMessage = String(data: data, encoding: .utf8) {
             var success = false
@@ -399,29 +424,8 @@ public struct OIDCLite: Sendable {
                 // was good. So returning nil means no tokens but not an error
                 // (we would throw if there was an error)
                 return nil
-            } else {
-                throw OIDCLiteError.authFailure(
-                    "Status code:\(responseCode), Did not match override:"
-                        + (String(data: data, encoding: .utf8) ?? "Unknown error")
-                )
             }
-        } else {
-            throw OIDCLiteError.authFailure(
-                "Status code:\(responseCode), Not 400, no override, or bad error message:"
-                    + (String(data: data, encoding: .utf8) ?? "Unknown error")
-            )
         }
-    }
-
-    private func prettyPrintInfo(dict: [String: Any]) -> String {
-        var result = ""
-
-        for item in dict {
-            result.append("\(item.key):  ")
-            result.append(String(describing: item.value))
-            result.append("\n")
-        }
-
-        return result
+        throw Self.oauthError(from: data, status: status)
     }
 }
