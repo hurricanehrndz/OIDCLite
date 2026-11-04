@@ -18,7 +18,7 @@ response body:
 - A match returns `nil`: credentials were accepted for the caller's policy, but no token is
   available, such as an MFA-gated response.
 - No match throws `OIDCLiteError.oauthError` when the body contains OAuth error JSON, or
-  `OIDCLiteError.authFailure` for a non-JSON body.
+  `OIDCLiteError.httpStatus` with the response status otherwise.
 
 Other non-success responses throw the same typed error forms without override matching. Omitting
 `overrideErrors` therefore makes every non-success response throw.

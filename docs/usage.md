@@ -102,6 +102,7 @@ Non-success token responses containing OAuth error JSON throw:
 OIDCLiteError.oauthError(code: String, description: String?, httpStatus: Int)
 ```
 
-Callers can use the OAuth code and HTTP status directly. Non-JSON error bodies throw
-`OIDCLiteError.authFailure`; discovery, callback parsing, state validation, and missing endpoints
-use their dedicated `OIDCLiteError` cases.
+Callers can use the OAuth code and HTTP status directly. Non-success responses whose body is not
+OAuth error JSON, including discovery failures, throw `OIDCLiteError.httpStatus(Int)` so callers can
+tell a retryable 5xx or 429 from a client error. Callback parsing, state validation, and missing
+endpoints use their dedicated `OIDCLiteError` cases.
