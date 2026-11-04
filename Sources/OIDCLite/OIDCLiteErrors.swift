@@ -15,6 +15,8 @@ public enum OIDCLiteError: Error, Equatable, Sendable, LocalizedError {
     case missingEndpoint(String)
     case authFailure(String)
     case oauthError(code: String, description: String?, httpStatus: Int)
+    /// A non-2xx response whose body is not an OAuth error, such as an HTML 503 page.
+    case httpStatus(Int)
 
     public var errorDescription: String? {
         switch self {
@@ -33,6 +35,8 @@ public enum OIDCLiteError: Error, Equatable, Sendable, LocalizedError {
         case let .oauthError(code, description, httpStatus):
             let detail = description.map { ": \($0)" } ?? ""
             return "OAuth error \(code) (HTTP \(httpStatus))\(detail)"
+        case let .httpStatus(status):
+            return "Unexpected HTTP status \(status)"
         }
     }
 }

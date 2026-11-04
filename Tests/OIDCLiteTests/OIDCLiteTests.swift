@@ -58,11 +58,14 @@ struct OIDCLiteTests {
         #expect(result.jwksURI == URL(string: "https://example.com/keys"))
     }
 
-    @Test func discoveryRejectsHTTPFailure() async throws {
-        let session = try StubURLProtocol.session(responses: [(response(status: 404), Data())])
+    /// Callers decide between "retry later" and "sign in again" from the status,
+    /// so discovery must not collapse a 503 and a 404 into one opaque error.
+    @Test(arguments: [404, 429, 503])
+    func discoveryReportsHTTPStatus(status: Int) async throws {
+        let session = try StubURLProtocol.session(responses: [(response(status: status), htmlErrorPage)])
         let oidc = OIDCLite(discoveryURL: discoveryURL, clientID: clientID, session: session)
 
-        await #expect(throws: OIDCLiteError.unableToLoadEndpoint) {
+        await #expect(throws: OIDCLiteError.httpStatus(status)) {
             try await oidc.getEndpoints()
         }
     }
@@ -283,6 +286,40 @@ struct OIDCLiteTests {
         }
     }
 
+    @Test(arguments: [429, 503])
+    func refreshReportsHTTPStatusForNonOAuthBody(status: Int) async throws {
+        let session = try StubURLProtocol.session(responses: [(response(status: status), htmlErrorPage)])
+        let oidc = OIDCLite(discoveryURL: discoveryURL, clientID: clientID, session: session)
+
+        await #expect(throws: OIDCLiteError.httpStatus(status)) {
+            try await oidc.refreshTokens("refresh", endpoints: endpoints())
+        }
+    }
+
+    @Test func refreshReportsHTTPStatusForNonOAuthJSON() async throws {
+        let body = Data(#"{"errorCode":"E0000011","errorSummary":"Invalid token provided"}"#.utf8)
+        let session = try StubURLProtocol.session(responses: [(response(status: 401), body)])
+        let oidc = OIDCLite(discoveryURL: discoveryURL, clientID: clientID, session: session)
+
+        await #expect(throws: OIDCLiteError.httpStatus(401)) {
+            try await oidc.refreshTokens("refresh", endpoints: endpoints())
+        }
+    }
+
+    @Test func ropgReportsHTTPStatusForNonOAuthBody() async throws {
+        let session = try StubURLProtocol.session(responses: [(response(status: 503), htmlErrorPage)])
+        let oidc = OIDCLite(discoveryURL: discoveryURL, clientID: clientID, session: session)
+
+        await #expect(throws: OIDCLiteError.httpStatus(503)) {
+            try await oidc.requestTokenWithROPG(
+                username: "user",
+                password: "password",
+                endpoints: endpoints(),
+                overrideErrors: ["AADSTS50076"]
+            )
+        }
+    }
+
     @Test func ropgPreservesRawBodyOverrideMatching() async throws {
         let body = Data(
             #"{"error":"invalid_grant","error_description":"AADSTS50076: multi-factor authentication required"}"#.utf8
@@ -314,6 +351,8 @@ struct OIDCLiteTests {
             )
         }
     }
+
+    private let htmlErrorPage = Data("<html><body>Service Unavailable</body></html>".utf8)
 
     private func requestBody(at index: Int) -> String? {
         StubURLProtocol.requests[index].httpBody.flatMap { String(data: $0, encoding: .utf8) }

@@ -188,7 +188,7 @@ public struct OIDCLite: Sendable {
                 httpStatus: status
             )
         }
-        return .authFailure(String(data: data, encoding: .utf8) ?? "Unknown error (HTTP \(status))")
+        return .httpStatus(status)
     }
 
     func processOIDCResponse(_ data: Data) throws -> TokenResponse {
@@ -277,9 +277,11 @@ public struct OIDCLite: Sendable {
         req.httpMethod = "GET"
 
         let (data, response) = try await session.data(for: req)
-        guard let response = response as? HTTPURLResponse,
-              (200 ..< 300).contains(response.statusCode) else {
+        guard let response = response as? HTTPURLResponse else {
             throw OIDCLiteError.unableToLoadEndpoint
+        }
+        guard (200 ..< 300).contains(response.statusCode) else {
+            throw OIDCLiteError.httpStatus(response.statusCode)
         }
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw OIDCLiteError.unableToParseEndpoint
